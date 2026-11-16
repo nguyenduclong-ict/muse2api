@@ -1,0 +1,29 @@
+# Feature Spec: Tasks & Media Management
+
+- **Trạng thái:** `Ready for Implementation`
+- **Liên quan:** [ERD](../../02_basic_design/02_database/erd.md), [Screens Overview](../../02_basic_design/03_screens_overview.md)
+
+## 1. Mục tiêu & Bối cảnh
+Cung cấp bảng điều khiển Overview (`SCR-01`) và trang Tasks & Media (`SCR-04`) để theo dõi toàn bộ lịch sử tác vụ sinh nội dung (`chat`, `image`, `video`, `speech`), xem tiến trình realtime, xóa task và quản lý thư viện file media trong `data/media/`.
+
+## 2. Phạm vi
+- **In Scope:** Lưu vết task trong SQLite, thống kê 7 ngày cho Overview, lọc task theo loại/trạng thái, xóa từng task hoặc Clear Completed, xem/xóa file media.
+- **Out of Scope:** Chỉnh sửa nội dung media trực tiếp trên UI.
+
+## 3. Yêu cầu chức năng (`FR`)
+- **FR-201 (Ghi nhận Task):** Mọi request tới `/v1/chat/completions`, `/v1/responses`, `/v1/images/*`, `/v1/videos*`, `/v1/audio/speech` đều tạo bản ghi trong bảng `tasks` (`queued`/`running` → `completed`/`failed`), lưu `account_id`, `model`, `prompt_preview`, `latency_ms`, `media_filename`, `error_message`.
+- **FR-202 (Overview Dashboard):** `GET /admin/dashboard` trả về: số tài khoản healthy/total, số WSS tunnel đang mở, thống kê task 7 ngày gần nhất, tổng dung lượng `data/media/`, và danh sách `accounts` kèm `quota` (bỏ bảng Recent Tasks khỏi Overview).
+- **FR-203 (Danh sách & Lọc Tasks):** `GET /admin/tasks` hỗ trợ lọc theo `type` (`chat`, `image`, `video`), `status` (`running`, `completed`, `failed`), và phân trang.
+- **FR-204 (Xóa Tasks & Dọn Media liên quan):** `DELETE /admin/tasks/{id}` xóa 1 task và xóa luôn file `media_filename` tương ứng trong `data/media/` (nếu không còn task khác tham chiếu); `POST /admin/tasks/clear` xóa toàn bộ task không còn `running` và dọn sạch các file media tương ứng của các task đó.
+- **FR-205 (Thư viện Media & Multi-Select):** `GET /admin/media` liệt kê file trong `data/media/` kèm thumbnail preview (`<img>` / `<video>`); hỗ trợ chọn nhiều file qua custom shadcn-style `Checkbox` (hỗ trợ `indeterminate`) và xóa hàng loạt qua `POST /admin/media/delete`, hoặc xóa lẻ qua `DELETE /admin/media/{name}`.
+
+## 4. Quy tắc nghiệp vụ (`BR`)
+- **BR-201:** `prompt_preview` chỉ lưu tối đa `200` ký tự đầu để giữ DB gọn nhẹ.
+- **BR-202:** Không cho phép xóa task đang ở trạng thái `running` qua `POST /admin/tasks/clear`.
+- **BR-203 (Zero Layout Shift):** `CardHeader` của bảng Media giữ chiều cao tối thiểu cố định và dành sẵn không gian cho nút `Delete Selected` (`invisible` khi chưa chọn) để thao tác check/uncheck không làm dịch chuyển bảng.
+
+## 5. Tiêu chí nghiệm thu (`AC`)
+- **AC-201:** Sau khi gọi `/v1/videos`, task xuất hiện với `status=running` và tự động cập nhật sang `completed` kèm `media_filename` khi video tải xong.
+- **AC-202:** Bấm **Clear Completed** xóa toàn bộ task `completed`/`failed` nhưng giữ nguyên task `running`.
+- **AC-203:** Xóa 1 hoặc nhiều file qua `POST /admin/media/delete` sẽ xóa các file vật lý khỏi `data/media/` mà không làm nhảy layout khi chọn checkbox.
+- **AC-204:** Xóa 1 task có `media_filename` (qua `DELETE /admin/tasks/{id}` hoặc `POST /admin/tasks/clear`) sẽ xóa luôn file vật lý trong `data/media/`.

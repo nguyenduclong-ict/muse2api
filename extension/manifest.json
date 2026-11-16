@@ -1,0 +1,12 @@
+{
+  "manifest_version": 3,
+  "name": "muse2apiv2 Cookie Exporter",
+  "version": "1.0.0",
+  "description": "Copy muse.ai session cookies for muse2apiv2",
+  "permissions": ["cookies", "clipboardWrite"],
+  "host_permissions": ["https://muse.ai/*"],
+  "action": {
+    "default_popup": "popup.html",
+    "default_title": "Copy muse.ai Cookies"
+  }
+}

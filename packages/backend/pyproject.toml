@@ -1,0 +1,17 @@
+[project]
+name = "muse2apiv2-backend"
+version = "2.0.0"
+description = "OpenAI-compatible gateway and admin console backend for muse.ai"
+requires-python = ">=3.12"
+dependencies = [
+    "fastapi>=0.115.0",
+    "uvicorn>=0.30.0",
+    "requests>=2.31.0",
+    "PySocks>=1.7.1",
+    "websocket-client>=1.8.0",
+    "cryptography>=42.0.0",
+    "python-multipart>=0.0.9",
+]
+
+[tool.uv]
+package = false

@@ -1,0 +1,317 @@
+"""Admin routes for Accounts & Keep-Alive."""
+from __future__ import annotations
+
+import concurrent.futures
+import io
+import json
+import os
+import secrets
+import zipfile
+from typing import Any
+
+from fastapi import APIRouter, HTTPException, Request
+from fastapi.responses import JSONResponse, StreamingResponse
+from pydantic import BaseModel
+
+from muse_wss import fetch_quota_http
+from services.cookie_parser import mask_cookies, mask_proxy, parse_cookies
+
+router = APIRouter(prefix="/admin", tags=["accounts"])
+
+
+class AccountCreateReq(BaseModel):
+    label: str
+    cookies_raw: str
+    proxy_id: str | None = None
+    enabled: bool = True
+
+
+class AccountPatchReq(BaseModel):
+    label: str | None = None
+    cookies_raw: str | None = None
+    proxy_id: str | None = None
+    enabled: bool | None = None
+
+
+def _serialize_account(acc: dict[str, Any], wss_connected: bool) -> dict[str, Any]:
+    cookies = json.loads(acc.get("cookies_json") or "{}")
+    quota = json.loads(acc.get("quota_json") or "{}")
+    eff_proxy = (acc.get("effective_proxy_url") or acc.get("proxy_url") or "").strip()
+    return {
+        "id": acc["id"],
+        "label": acc["label"],
+        "cookies_masked": mask_cookies(cookies),
+        "cookie_count": len(cookies),
+        "proxy_id": acc.get("proxy_id"),
+        "proxy_masked": mask_proxy(eff_proxy),
+        "proxy_ip": acc.get("proxy_ip") or "",
+        "proxy_status": acc.get("proxy_status") or "",
+        "has_proxy": bool(eff_proxy),
+        "enabled": bool(acc["enabled"]),
+        "status": acc["status"],
+        "wss_connected": wss_connected,
+        "quota": quota,
+        "last_used_at": acc["last_used_at"],
+        "last_keepalive_at": acc["last_keepalive_at"],
+        "last_error": acc["last_error"],
+        "created_at": acc["created_at"],
+        "updated_at": acc["updated_at"],
+    }
+
+
+@router.get("/extension/download")
+def download_extension(request: Request):
+    cfg = request.app.state.cfg
+    ext_dir = os.path.join(cfg.project_root, "extension")
+    if not os.path.isdir(ext_dir):
+        raise HTTPException(status_code=404, detail="Extension directory not found")
+    buf = io.BytesIO()
+    with zipfile.ZipFile(buf, "w", zipfile.ZIP_DEFLATED) as zf:
+        for root, _, files in os.walk(ext_dir):
+            for fn in files:
+                full = os.path.join(root, fn)
+                rel = os.path.relpath(full, ext_dir)
+                zf.write(full, arcname=os.path.join("muse2apiv2-extension", rel))
+    buf.seek(0)
+    return StreamingResponse(
+        buf,
+        media_type="application/zip",
+        headers={"Content-Disposition": 'attachment; filename="muse2apiv2-extension.zip"'},
+    )
+
+
+@router.get("/accounts/export")
+def export_accounts(request: Request):
+    db = request.app.state.db
+    exported = []
+    for acc in db.list_accounts():
+        cookies = json.loads(acc.get("cookies_json") or "{}")
+        exported.append({
+            "id": acc["id"],
+            "label": acc["label"],
+            "cookies": cookies,
+            "cookie_header": cookies_to_header(cookies),
+            "proxy_id": acc.get("proxy_id"),
+            "proxy_url": acc.get("effective_proxy_url") or "",
+            "enabled": bool(acc["enabled"]),
+            "status": acc["status"],
+            "quota": json.loads(acc.get("quota_json") or "{}"),
+        })
+    return JSONResponse(
+        content={"accounts": exported},
+        headers={"Content-Disposition": 'attachment; filename="muse2apiv2-accounts.json"'},
+    )
+
+
+@router.post("/accounts/quota")
+def refresh_all_quotas(request: Request):
+    db = request.app.state.db
+    enabled_accs = [a for a in db.list_accounts() if a["enabled"]]
+
+    def _check(acc: dict[str, Any]) -> dict[str, Any]:
+        aid = acc["id"]
+        cookies = json.loads(acc["cookies_json"])
+        proxy_url = acc.get("effective_proxy_url") or ""
+        try:
+            q = fetch_quota_http(cookies, proxy_url=proxy_url)
+            db.update_account(aid, quota_json=json.dumps(q), status="healthy", last_error="")
+            return {"account_id": aid, "ok": True, "quota": q}
+        except Exception as exc:
+            return {"account_id": aid, "ok": False, "error": str(exc)}
+
+    results = []
+    if enabled_accs:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(4, len(enabled_accs))) as ex:
+            results = list(ex.map(_check, enabled_accs))
+    return {"results": results}
+
+
+@router.get("/accounts")
+def list_accounts(request: Request):
+    db = request.app.state.db
+    pool = request.app.state.wss_pool
+    items = [_serialize_account(a, pool.is_connected(a["id"])) for a in db.list_accounts()]
+    return {"accounts": items}
+
+
+@router.post("/accounts", status_code=201)
+def create_account(body: AccountCreateReq, request: Request):
+    db = request.app.state.db
+    pool = request.app.state.wss_pool
+    try:
+        cookies = parse_cookies(body.cookies_raw)
+    except ValueError as exc:
+        raise HTTPException(status_code=400, detail=str(exc))
+
+    proxy_id = (body.proxy_id or "").strip() or None
+    if proxy_id and not db.get_proxy(proxy_id):
+        raise HTTPException(status_code=400, detail="Selected proxy not found")
+
+    aid = f"acc_{secrets.token_hex(6)}"
+    acc = db.create_account(
+        account_id=aid,
+        label=body.label.strip() or aid,
+        cookies=cookies,
+        proxy_id=proxy_id,
+        enabled=body.enabled,
+        status="unknown",
+    )
+    test_res = pool.test_account(aid)
+    if test_res.get("ok"):
+        try:
+            eff_proxy = (db.get_account(aid) or {}).get("effective_proxy_url") or ""
+            q = fetch_quota_http(cookies, proxy_url=eff_proxy)
+            db.update_account(aid, quota_json=json.dumps(q))
+        except Exception:
+            pass
+    acc = db.get_account(aid) or acc
+    return {"account": _serialize_account(acc, pool.is_connected(aid)), "test": test_res}
+
+
+@router.patch("/accounts/{account_id}")
+def patch_account(account_id: str, body: AccountPatchReq, request: Request):
+    db = request.app.state.db
+    pool = request.app.state.wss_pool
+    acc = db.get_account(account_id)
+    if not acc:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    updates: dict[str, Any] = {}
+    if body.label is not None:
+        updates["label"] = body.label.strip() or acc["label"]
+    if body.cookies_raw is not None and body.cookies_raw.strip():
+        try:
+            cookies = parse_cookies(body.cookies_raw)
+            updates["cookies_json"] = json.dumps(cookies)
+            updates["status"] = "unknown"
+            pool.close_account(account_id)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+    if "proxy_id" in body.model_fields_set:
+        pid = (body.proxy_id or "").strip() or None
+        if pid and not db.get_proxy(pid):
+            raise HTTPException(status_code=400, detail="Selected proxy not found")
+        updates["proxy_id"] = pid
+        pool.close_account(account_id)
+    if body.enabled is not None:
+        updates["enabled"] = 1 if body.enabled else 0
+        if not body.enabled:
+            pool.close_account(account_id)
+
+    updated = db.update_account(account_id, **updates)
+    return {"account": _serialize_account(updated, pool.is_connected(account_id))}
+
+
+@router.delete("/accounts/{account_id}")
+def delete_account(account_id: str, request: Request):
+    db = request.app.state.db
+    pool = request.app.state.wss_pool
+    pool.close_account(account_id)
+    if not db.delete_account(account_id):
+        raise HTTPException(status_code=404, detail="Account not found")
+    return {"ok": True}
+
+
+@router.post("/accounts/{account_id}/test")
+def test_account(account_id: str, request: Request):
+    pool = request.app.state.wss_pool
+    res = pool.test_account(account_id)
+    return res
+
+
+@router.post("/accounts/{account_id}/quota")
+def check_quota(account_id: str, request: Request):
+    db = request.app.state.db
+    acc = db.get_account(account_id)
+    if not acc:
+        raise HTTPException(status_code=404, detail="Account not found")
+    cookies = json.loads(acc["cookies_json"])
+    proxy_url = acc.get("effective_proxy_url") or ""
+    try:
+        quota = fetch_quota_http(cookies, proxy_url=proxy_url)
+        db.update_account(account_id, quota_json=json.dumps(quota), status="healthy", last_error="")
+        return {"ok": True, "quota": quota}
+    except Exception as exc:
+        return {"ok": False, "quota": json.loads(acc.get("quota_json") or "{}"), "error": str(exc)}
+
+
+def _refresh_account_full(app_state: Any, account_id: str) -> dict[str, Any]:
+    """Run status/keepalive check + WSS tunnel check/connect + quota fetch."""
+    db = app_state.db
+    pool = app_state.wss_pool
+    keepalive = app_state.keepalive
+
+    acc = db.get_account(account_id)
+    if not acc:
+        raise HTTPException(status_code=404, detail="Account not found")
+
+    ka_res = keepalive.run_one(account_id)
+    if ka_res.get("status") == "expired":
+        updated = db.get_account(account_id) or acc
+        return {
+            "ok": False,
+            "account_id": account_id,
+            "keepalive": ka_res,
+            "wss": {"ok": False, "status": "expired", "error": ka_res.get("error", "")},
+            "quota": json.loads(updated.get("quota_json") or "{}"),
+            "error": ka_res.get("error", "Session expired"),
+            "account": _serialize_account(updated, pool.is_connected(account_id)),
+        }
+
+    wss_res = pool.test_account(account_id)
+
+    acc = db.get_account(account_id) or acc
+    cookies = json.loads(acc["cookies_json"])
+    proxy_url = acc.get("effective_proxy_url") or ""
+    quota = json.loads(acc.get("quota_json") or "{}")
+    quota_err = ""
+    try:
+        quota = fetch_quota_http(cookies, proxy_url=proxy_url)
+        db.update_account(account_id, quota_json=json.dumps(quota))
+    except Exception as exc:
+        quota_err = str(exc)
+
+    updated = db.get_account(account_id) or acc
+    ok = bool(ka_res.get("ok")) and bool(wss_res.get("ok")) and not quota_err
+    err = wss_res.get("error") or ka_res.get("error") or quota_err or ""
+    return {
+        "ok": ok,
+        "account_id": account_id,
+        "keepalive": ka_res,
+        "wss": wss_res,
+        "quota": quota,
+        "error": err,
+        "account": _serialize_account(updated, pool.is_connected(account_id)),
+    }
+
+
+@router.post("/accounts/{account_id}/refresh")
+def refresh_account(account_id: str, request: Request):
+    return _refresh_account_full(request.app.state, account_id)
+
+
+@router.post("/accounts/refresh")
+def refresh_all_accounts(request: Request):
+    db = request.app.state.db
+    enabled_accs = [a for a in db.list_accounts() if a["enabled"]]
+    results: list[dict[str, Any]] = []
+    if enabled_accs:
+        with concurrent.futures.ThreadPoolExecutor(max_workers=min(4, len(enabled_accs))) as ex:
+            results = list(ex.map(lambda a: _refresh_account_full(request.app.state, a["id"]), enabled_accs))
+    return {"results": results}
+
+
+@router.post("/accounts/{account_id}/keepalive")
+def keepalive_one(account_id: str, request: Request):
+    return request.app.state.keepalive.run_one(account_id)
+
+
+@router.post("/accounts/keepalive")
+def keepalive_all(request: Request):
+    results = request.app.state.keepalive.run_all()
+    return {"results": results}
+
+
+@router.get("/keepalive/logs")
+def keepalive_logs(request: Request, limit: int = 30):
+    return {"logs": request.app.state.db.list_keepalive_logs(limit=limit)}
