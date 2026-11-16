@@ -5,7 +5,7 @@ services:
       dockerfile: Dockerfile
     container_name: muse2apiv2
     ports:
-      - "${MUSE2API_PORT:-8000}:8000"
+      - "${MUSE2API_PORT:-9123}:8000"
     env_file:
       - path: .env
         required: false
@@ -15,7 +15,13 @@ services:
       - ./data:/app/data
     restart: unless-stopped
     healthcheck:
-      test: ["CMD", "python", "-c", "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5)"]
+      test:
+        [
+          "CMD",
+          "python",
+          "-c",
+          "import urllib.request; urllib.request.urlopen('http://127.0.0.1:8000/healthz', timeout=5)",
+        ]
       interval: 30s
       timeout: 5s
       retries: 3
