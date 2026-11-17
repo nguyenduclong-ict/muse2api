@@ -435,7 +435,8 @@ class Database:
             finally:
                 conn.close()
 
-    def list_tasks(self, task_type: str = "", status: str = "", limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
+    @staticmethod
+    def _task_filter_sql(task_type: str = "", status: str = "") -> tuple[str, list[Any]]:
         clauses = []
         params: list[Any] = []
         if task_type:
@@ -445,6 +446,20 @@ class Database:
             clauses.append("t.status = ?")
             params.append(status)
         where = f"WHERE {' AND '.join(clauses)}" if clauses else ""
+        return where, params
+
+    def count_tasks(self, task_type: str = "", status: str = "") -> int:
+        where, params = self._task_filter_sql(task_type, status)
+        with self._lock:
+            conn = self._connect()
+            try:
+                row = conn.execute(f"SELECT COUNT(*) FROM tasks t {where}", params).fetchone()
+                return int(row[0]) if row else 0
+            finally:
+                conn.close()
+
+    def list_tasks(self, task_type: str = "", status: str = "", limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
+        where, params = self._task_filter_sql(task_type, status)
         params.extend([limit, offset])
         with self._lock:
             conn = self._connect()

@@ -6,6 +6,8 @@ OpenAI-compatible API Gateway (`/v1/*`) và Admin Console cho **muse.ai**, giao 
 
 ![muse2apiv2 Dashboard](docs/assets/dashboard.png)
 
+![muse2apiv2 Tasks](docs/assets/tasks.png)
+
 ## Tính năng chính
 
 - **OpenAI `/v1/*` API Parity:** Hỗ trợ `/v1/models`, `/v1/chat/completions` (streaming SSE & non-stream), `/v1/responses`, `/v1/images/generations`, `/v1/images/edits`, `/v1/images/tasks`, `/v1/videos`, `/v1/videos/generations`, `/v1/media/{filename}`.

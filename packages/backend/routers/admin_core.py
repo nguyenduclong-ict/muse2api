@@ -66,10 +66,27 @@ def rotate_apikey(request: Request):
     return request.app.state.db.rotate_api_key()
 
 
+def _paginate_meta(total: int, page: int, page_size: int) -> tuple[int, int, int, int]:
+    safe_size = max(1, min(100, page_size))
+    total_pages = max(1, (total + safe_size - 1) // safe_size)
+    safe_page = max(1, min(page, total_pages))
+    offset = (safe_page - 1) * safe_size
+    return safe_page, safe_size, total_pages, offset
+
+
 @router.get("/tasks")
-def list_tasks(request: Request, type: str = "", status: str = "", limit: int = 50, offset: int = 0):
-    items = request.app.state.db.list_tasks(task_type=type, status=status, limit=limit, offset=offset)
-    return {"tasks": items}
+def list_tasks(request: Request, type: str = "", status: str = "", page: int = 1, page_size: int = 10):
+    db = request.app.state.db
+    total = db.count_tasks(task_type=type, status=status)
+    safe_page, safe_size, total_pages, offset = _paginate_meta(total, page, page_size)
+    items = db.list_tasks(task_type=type, status=status, limit=safe_size, offset=offset)
+    return {
+        "tasks": items,
+        "total": total,
+        "page": safe_page,
+        "page_size": safe_size,
+        "total_pages": total_pages,
+    }
 
 
 def _remove_media_files(cfg, filenames: list[str]) -> int:
@@ -105,7 +122,7 @@ def clear_tasks(request: Request):
 
 
 @router.get("/media")
-def list_media(request: Request):
+def list_media(request: Request, page: int = 1, page_size: int = 10):
     cfg = request.app.state.cfg
     cleanup = request.app.state.cleanup
     files: list[dict[str, Any]] = []
@@ -125,7 +142,17 @@ def list_media(request: Request):
                 "url": f"/v1/media/{name}",
             })
     files.sort(key=lambda x: x["created_at"], reverse=True)
-    return {"files": files, "usage_bytes": cleanup.storage_usage_bytes()}
+    total = len(files)
+    safe_page, safe_size, total_pages, offset = _paginate_meta(total, page, page_size)
+    paged = files[offset: offset + safe_size]
+    return {
+        "files": paged,
+        "total": total,
+        "page": safe_page,
+        "page_size": safe_size,
+        "total_pages": total_pages,
+        "usage_bytes": cleanup.storage_usage_bytes(),
+    }
 
 
 class MediaDeleteBatchReq(BaseModel):

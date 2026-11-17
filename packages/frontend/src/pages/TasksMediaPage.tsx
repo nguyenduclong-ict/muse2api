@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Download, ExternalLink, Eye, Trash2, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Download, ExternalLink, Eye, Trash2, X } from "lucide-react";
 import { Badge, Button, Card, CardContent, CardHeader, CardTitle, Checkbox } from "../components/ui";
 import { useToast } from "../components/Toast";
 import { apiFetch, formatBytes, formatTimeAgo } from "../lib/api";
@@ -27,12 +27,78 @@ interface MediaItem {
   url: string;
 }
 
+function PaginationBar({
+  page,
+  pageSize,
+  total,
+  totalPages,
+  onPageChange,
+  onPageSizeChange,
+}: {
+  page: number;
+  pageSize: number;
+  total: number;
+  totalPages: number;
+  onPageChange: (nextPage: number) => void;
+  onPageSizeChange: (nextSize: number) => void;
+}) {
+  if (total === 0) return null;
+  const start = (page - 1) * pageSize + 1;
+  const end = Math.min(total, page * pageSize);
+
+  return (
+    <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-zinc-800/80 pt-3 text-xs text-zinc-400">
+      <div className="flex items-center gap-3">
+        <span>
+          Showing <span className="font-mono text-zinc-200">{start}–{end}</span> of{" "}
+          <span className="font-mono text-zinc-200">{total}</span>
+        </span>
+        <select
+          aria-label="Rows per page"
+          value={pageSize}
+          onChange={(e) => onPageSizeChange(Number(e.target.value))}
+          className="h-7 rounded-md border border-zinc-800 bg-zinc-950 px-2 text-xs text-zinc-200"
+        >
+          <option value={10}>10 / page</option>
+          <option value={20}>20 / page</option>
+          <option value={50}>50 / page</option>
+        </select>
+      </div>
+      <div className="flex items-center gap-1.5">
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={page <= 1}
+          onClick={() => onPageChange(page - 1)}
+        >
+          <ChevronLeft className="h-3.5 w-3.5" /> Prev
+        </Button>
+        <span className="px-2 font-mono text-zinc-300">
+          {page} / {totalPages}
+        </span>
+        <Button
+          size="sm"
+          variant="outline"
+          disabled={page >= totalPages}
+          onClick={() => onPageChange(page + 1)}
+        >
+          Next <ChevronRight className="h-3.5 w-3.5" />
+        </Button>
+      </div>
+    </div>
+  );
+}
+
 export function TasksMediaPage() {
   const qc = useQueryClient();
   const toast = useToast();
   const [subTab, setSubTab] = useState<"tasks" | "media">("tasks");
   const [typeFilter, setTypeFilter] = useState("");
   const [statusFilter, setStatusFilter] = useState("");
+  const [tasksPage, setTasksPage] = useState(1);
+  const [tasksPageSize, setTasksPageSize] = useState(10);
+  const [mediaPage, setMediaPage] = useState(1);
+  const [mediaPageSize, setMediaPageSize] = useState(10);
   const [selectedMedia, setSelectedMedia] = useState<Set<string>>(new Set());
   const [deletingTaskId, setDeletingTaskId] = useState<string | null>(null);
   const [deletingMediaName, setDeletingMediaName] = useState<string | null>(null);
@@ -48,19 +114,34 @@ export function TasksMediaPage() {
   }, [previewMedia]);
 
   const { data: tasksData } = useQuery({
-    queryKey: ["tasks", typeFilter, statusFilter],
+    queryKey: ["tasks", typeFilter, statusFilter, tasksPage, tasksPageSize],
     queryFn: () =>
-      apiFetch<{ tasks: TaskItem[] }>(
-        `/admin/tasks?type=${encodeURIComponent(typeFilter)}&status=${encodeURIComponent(statusFilter)}`
+      apiFetch<{ tasks: TaskItem[]; total: number; page: number; page_size: number; total_pages: number }>(
+        `/admin/tasks?type=${encodeURIComponent(typeFilter)}&status=${encodeURIComponent(statusFilter)}&page=${tasksPage}&page_size=${tasksPageSize}`
       ),
     refetchInterval: 4000,
   });
 
   const { data: mediaData } = useQuery({
-    queryKey: ["media"],
-    queryFn: () => apiFetch<{ files: MediaItem[]; usage_bytes: number }>("/admin/media"),
+    queryKey: ["media", mediaPage, mediaPageSize],
+    queryFn: () =>
+      apiFetch<{ files: MediaItem[]; total: number; page: number; page_size: number; total_pages: number; usage_bytes: number }>(
+        `/admin/media?page=${mediaPage}&page_size=${mediaPageSize}`
+      ),
     refetchInterval: 8000,
   });
+
+  useEffect(() => {
+    if (tasksData && tasksPage > tasksData.total_pages) {
+      setTasksPage(tasksData.total_pages);
+    }
+  }, [tasksData, tasksPage]);
+
+  useEffect(() => {
+    if (mediaData && mediaPage > mediaData.total_pages) {
+      setMediaPage(mediaData.total_pages);
+    }
+  }, [mediaData, mediaPage]);
 
   const deleteTaskMut = useMutation({
     mutationFn: (id: string) => {
@@ -163,7 +244,10 @@ export function TasksMediaPage() {
             <div className="flex items-center gap-2">
               <select
                 value={typeFilter}
-                onChange={(e) => setTypeFilter(e.target.value)}
+                onChange={(e) => {
+                  setTypeFilter(e.target.value);
+                  setTasksPage(1);
+                }}
                 className="h-8 rounded-lg border border-zinc-800 bg-zinc-950 px-2.5 text-xs text-zinc-200"
               >
                 <option value="">All Types</option>
@@ -173,7 +257,10 @@ export function TasksMediaPage() {
               </select>
               <select
                 value={statusFilter}
-                onChange={(e) => setStatusFilter(e.target.value)}
+                onChange={(e) => {
+                  setStatusFilter(e.target.value);
+                  setTasksPage(1);
+                }}
                 className="h-8 rounded-lg border border-zinc-800 bg-zinc-950 px-2.5 text-xs text-zinc-200"
               >
                 <option value="">All Statuses</option>
@@ -262,12 +349,23 @@ export function TasksMediaPage() {
                 </table>
               </div>
             )}
+            <PaginationBar
+              page={tasksData?.page || tasksPage}
+              pageSize={tasksData?.page_size || tasksPageSize}
+              total={tasksData?.total || 0}
+              totalPages={tasksData?.total_pages || 1}
+              onPageChange={setTasksPage}
+              onPageSizeChange={(size) => {
+                setTasksPageSize(size);
+                setTasksPage(1);
+              }}
+            />
           </CardContent>
         </Card>
       ) : (
         <Card>
           <CardHeader className="min-h-[60px] flex flex-row items-center justify-between gap-3 space-y-0">
-            <CardTitle>Stored Media Files ({mediaFiles.length})</CardTitle>
+            <CardTitle>Stored Media Files ({mediaData?.total ?? mediaFiles.length})</CardTitle>
             <div className="min-h-7 flex items-center">
               <Button
                 size="sm"
@@ -368,6 +466,21 @@ export function TasksMediaPage() {
                 </table>
               </div>
             )}
+            <PaginationBar
+              page={mediaData?.page || mediaPage}
+              pageSize={mediaData?.page_size || mediaPageSize}
+              total={mediaData?.total || 0}
+              totalPages={mediaData?.total_pages || 1}
+              onPageChange={(p) => {
+                setSelectedMedia(new Set());
+                setMediaPage(p);
+              }}
+              onPageSizeChange={(size) => {
+                setSelectedMedia(new Set());
+                setMediaPageSize(size);
+                setMediaPage(1);
+              }}
+            />
           </CardContent>
         </Card>
       )}

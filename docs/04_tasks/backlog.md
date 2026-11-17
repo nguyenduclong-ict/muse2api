@@ -11,3 +11,4 @@
 | `007` | Proxy Management, Extension & Task Media Cleanup | [05_proxy_management](../03_features/05_proxy_management/spec.md) | `Completed` | 100% |
 | `008` | Git Init, Docker/Compose & Auto-Skip Exhausted Quota | [01_accounts_and_keepalive](../03_features/01_accounts_and_keepalive/spec.md) | `Completed` | 100% |
 | `009` | Account Edit Modal, Unified Refresh & Background WSS Tunnel | [01_accounts_and_keepalive](../03_features/01_accounts_and_keepalive/spec.md) | `Completed` | 100% |
+| `010` | Server-Side Pagination for Tasks & Media (Default 10) | [03_tasks_and_media](../03_features/03_tasks_and_media/spec.md) | `Completed` | 100% |
