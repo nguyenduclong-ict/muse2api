@@ -1,21 +1,10 @@
 # muse2apiv2
 
-OpenAI-compatible API Gateway (`/v1/*`) và Admin Console cho **muse.ai**, giao tiếp trực tiếp qua HTTPS + WSS (`Noise_XX_25519_AESGCM_SHA256` & Protobuf) không cần chạy trình duyệt ngầm.
+OpenAI-compatible API Gateway (`/v1/*`) và Admin Console cho **muse.ai**, giao tiếp trực tiếp qua HTTPS + WSS (`Noise_XX_25519_AESGCM_SHA256` & Protobuf).
 
-## Cấu trúc thư mục
+> **Siêu nhẹ & tiết kiệm tài nguyên:** Không sử dụng Chrome headless / Chromium shell (Playwright/Puppeteer), chỉ tiêu tốn khoảng **~50MB RAM** trong quá trình vận hành.
 
-```text
-muse2apiv2/
-├── packages/
-│   ├── backend/          # FastAPI gateway, WSS pool, Keep-Alive, SQLite WAL (quản lý bằng uv)
-│   └── frontend/         # React + Vite + Tailwind + shadcn/ui Admin Console
-├── extension/            # Chrome Extension (Manifest V3) copy cookie muse.ai
-├── docs/                 # Tài liệu SRS, Basic Design, Feature Specs & Tasks
-├── data/                 # Runtime SQLite DB & thư mục media/ (tự tạo, gitignored)
-├── Dockerfile            # Multi-stage build (Node 20 + Python 3.12 + uv)
-├── docker-compose.yml    # Triển khai nhanh với volume ./data
-└── .env.example          # Mẫu biến môi trường
-```
+![muse2apiv2 Dashboard](docs/assets/dashboard.png)
 
 ## Tính năng chính
 
@@ -24,7 +13,45 @@ muse2apiv2/
 - **WSS Tunnel & Keep-Alive chạy ngầm:** Tự động duy trì/kiểm tra kết nối WSS Tunnel định kỳ, làm mới phiên và cập nhật trạng thái (`healthy`, `expired`, `cooldown`) lên UI.
 - **Proxy Management:** Import nhiều dòng (`http`/`https`/`socks4`/`socks5`), kiểm tra IP/vị trí/latency qua `ipinfo.io`, gán proxy cho tài khoản và tự gỡ khi xóa proxy.
 - **Chrome Extension Copy Cookie:** Tải trực tiếp từ giao diện **Accounts → Download Extension** (`.zip`) để lấy chuỗi cookie `muse.ai` (kể cả `HttpOnly`).
-- **Tasks & Media Cleanup:** Theo dõi lịch sử task kèm tài khoản thực thi; xóa task sẽ dọn luôn file media tương ứng khỏi `data/media/`.
+- **Tasks & Media Cleanup:** Theo dõi lịch sử task kèm tài khoản thực thi, xem trước ảnh/video trực tiếp qua modal; xóa task sẽ dọn luôn file media tương ứng khỏi `data/media/`.
+
+---
+
+## Chạy bằng Docker Compose (Khuyến nghị)
+
+### 1. Chuẩn bị file cấu hình `.env`
+```bash
+cp .env.example .env
+```
+Có thể chỉnh lại các biến trong `.env` nếu cần (ví dụ `MUSE2API_PORT=8000`, `MUSE2API_KEY=...`).
+
+### 2. Build & khởi chạy container
+```bash
+docker compose up -d --build
+```
+Container sẽ build frontend React + cài dependencies backend bằng `uv`, sau đó khởi động dịch vụ và mở cổng `8000` (hoặc theo `MUSE2API_PORT` trong `.env`).
+
+### 3. Truy cập & quản lý container
+- Mở Admin Console tại: `http://127.0.0.1:8000` (hoặc port bạn đã cấu hình).
+- Kiểm tra trạng thái & healthcheck:
+  ```bash
+  docker compose ps
+  ```
+- Xem logs realtime:
+  ```bash
+  docker compose logs -f muse2apiv2
+  ```
+- Dừng dịch vụ:
+  ```bash
+  docker compose down
+  ```
+- Cập nhật code mới và build lại:
+  ```bash
+  git pull
+  docker compose up -d --build
+  ```
+
+> **Lưu ý dữ liệu:** Toàn bộ database SQLite (`muse2apiv2.db`) và file media được mount ra thư mục `./data` trên máy host nên sẽ không bị mất khi restart hoặc build lại container.
 
 ---
 
@@ -48,25 +75,13 @@ cd packages/backend
 uv sync
 uv run uvicorn main:app --host 0.0.0.0 --port 18610
 ```
-Hoặc chạy trực tiếp file `main.py`:
+Hoặc chạy trực tiếp `main.py`:
 ```bash
 cd packages/backend
 uv run python main.py
 ```
 
 Sau khi khởi động, mở trình duyệt tại `http://127.0.0.1:18610` để truy cập Admin Console.
-
----
-
-## Chạy bằng Docker Compose
-
-```bash
-cp .env.example .env
-docker compose up -d --build
-```
-
-- Mặc định ánh xạ cổng `8000:8000` (hoặc theo `MUSE2API_PORT` trong `.env`).
-- Dữ liệu SQLite (`muse2apiv2.db`) và file media được lưu bền vững tại `./data`.
 
 ---
 

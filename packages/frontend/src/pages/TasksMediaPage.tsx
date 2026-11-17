@@ -1,6 +1,6 @@
-import { useState } from "react";
+import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ExternalLink, Trash2 } from "lucide-react";
+import { Download, ExternalLink, Eye, Trash2, X } from "lucide-react";
 import { Badge, Button, Card, CardContent, CardHeader, CardTitle, Checkbox } from "../components/ui";
 import { useToast } from "../components/Toast";
 import { apiFetch, formatBytes, formatTimeAgo } from "../lib/api";
@@ -36,6 +36,16 @@ export function TasksMediaPage() {
   const [selectedMedia, setSelectedMedia] = useState<Set<string>>(new Set());
   const [deletingTaskId, setDeletingTaskId] = useState<string | null>(null);
   const [deletingMediaName, setDeletingMediaName] = useState<string | null>(null);
+  const [previewMedia, setPreviewMedia] = useState<MediaItem | null>(null);
+
+  useEffect(() => {
+    if (!previewMedia) return;
+    const onKeyDown = (e: KeyboardEvent) => {
+      if (e.key === "Escape") setPreviewMedia(null);
+    };
+    window.addEventListener("keydown", onKeyDown);
+    return () => window.removeEventListener("keydown", onKeyDown);
+  }, [previewMedia]);
 
   const { data: tasksData } = useQuery({
     queryKey: ["tasks", typeFilter, statusFilter],
@@ -306,31 +316,51 @@ export function TasksMediaPage() {
                           />
                         </td>
                         <td className="py-2.5 pr-4">
-                          <a href={f.url} target="_blank" rel="noreferrer" className="block w-14 h-10 overflow-hidden rounded border border-zinc-800 bg-zinc-950">
+                          <button
+                            type="button"
+                            onClick={() => setPreviewMedia(f)}
+                            className="block w-14 h-10 overflow-hidden rounded border border-zinc-800 bg-zinc-950 hover:border-blue-500/70 transition-colors cursor-pointer"
+                            title="Preview media"
+                          >
                             {f.kind === "video" ? (
                               <video src={f.url} muted playsInline preload="metadata" className="h-full w-full object-cover" />
                             ) : (
                               <img src={f.url} alt={f.filename} loading="lazy" className="h-full w-full object-cover" />
                             )}
-                          </a>
+                          </button>
                         </td>
                         <td className="py-2.5 pr-4 font-mono text-xs text-blue-400">
-                          <a href={f.url} target="_blank" rel="noreferrer" className="hover:underline">
+                          <button
+                            type="button"
+                            onClick={() => setPreviewMedia(f)}
+                            className="hover:underline text-left cursor-pointer"
+                          >
                             {f.filename}
-                          </a>
+                          </button>
                         </td>
                         <td className="py-2.5 pr-4 capitalize text-zinc-300">{f.kind}</td>
                         <td className="py-2.5 pr-4 font-mono text-xs text-zinc-400">{formatBytes(f.size_bytes)}</td>
                         <td className="py-2.5 pr-4 text-xs text-zinc-500">{formatTimeAgo(f.created_at)}</td>
                         <td className="py-2.5 text-right">
-                          <Button
-                            size="sm"
-                            variant="danger"
-                            loading={deletingMediaName === f.filename}
-                            onClick={() => deleteMediaMut.mutate(f.filename)}
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </Button>
+                          <div className="inline-flex items-center gap-1.5">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => setPreviewMedia(f)}
+                              title="Preview media"
+                            >
+                              <Eye className="h-3.5 w-3.5" />
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="danger"
+                              loading={deletingMediaName === f.filename}
+                              onClick={() => deleteMediaMut.mutate(f.filename)}
+                              title="Delete media"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </Button>
+                          </div>
                         </td>
                       </tr>
                     ))}
@@ -340,6 +370,66 @@ export function TasksMediaPage() {
             )}
           </CardContent>
         </Card>
+      )}
+
+      {previewMedia && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-xs"
+          onClick={() => setPreviewMedia(null)}
+        >
+          <Card
+            className="w-full max-w-4xl border-zinc-700 bg-zinc-900 overflow-hidden"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <CardHeader className="flex flex-row items-center justify-between gap-3 border-b border-zinc-800 py-3">
+              <div className="min-w-0">
+                <CardTitle className="truncate font-mono text-sm text-zinc-100">
+                  {previewMedia.filename}
+                </CardTitle>
+                <p className="text-xs text-zinc-400 capitalize">
+                  {previewMedia.kind} · {formatBytes(previewMedia.size_bytes)} · {formatTimeAgo(previewMedia.created_at)}
+                </p>
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                <a
+                  href={previewMedia.url}
+                  download={previewMedia.filename}
+                  className="inline-flex h-8 items-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-800/70 px-2.5 text-xs font-medium text-zinc-200 hover:bg-zinc-800"
+                >
+                  <Download className="h-3.5 w-3.5" /> Download
+                </a>
+                <a
+                  href={previewMedia.url}
+                  target="_blank"
+                  rel="noreferrer"
+                  className="inline-flex h-8 items-center gap-1.5 rounded-md border border-zinc-700 bg-zinc-800/70 px-2.5 text-xs font-medium text-zinc-200 hover:bg-zinc-800"
+                >
+                  <ExternalLink className="h-3.5 w-3.5" /> Open
+                </a>
+                <Button size="sm" variant="ghost" onClick={() => setPreviewMedia(null)} title="Close">
+                  <X className="h-4 w-4" />
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent className="flex items-center justify-center bg-zinc-950 p-4">
+              {previewMedia.kind === "video" ? (
+                <video
+                  src={previewMedia.url}
+                  controls
+                  autoPlay
+                  playsInline
+                  className="max-h-[75vh] w-full rounded bg-black"
+                />
+              ) : (
+                <img
+                  src={previewMedia.url}
+                  alt={previewMedia.filename}
+                  className="max-h-[75vh] max-w-full rounded object-contain"
+                />
+              )}
+            </CardContent>
+          </Card>
+        </div>
       )}
     </div>
   );
