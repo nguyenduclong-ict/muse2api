@@ -28,15 +28,39 @@ class KeepAliveService:
     def stop(self) -> None:
         self._stop.set()
 
+    def _interval_seconds(self) -> int:
+        try:
+            settings = self.db.get_settings()
+            mins = int((settings.get("keepalive") or {}).get("interval_minutes") or self.cfg.keepalive_interval_minutes)
+        except Exception:
+            mins = self.cfg.keepalive_interval_minutes
+        return max(300, mins * 60)
+
     def _loop(self) -> None:
+        if self._stop.wait(2.0):
+            return
         while not self._stop.is_set():
-            interval_s = max(300, self.cfg.keepalive_interval_minutes * 60)
-            if self._stop.wait(interval_s):
-                break
             try:
-                self.run_all()
+                self.run_due()
             except Exception:
                 pass
+            if self._stop.wait(60.0):
+                break
+
+    def run_due(self) -> list[dict[str, Any]]:
+        """Run keep-alive only for enabled accounts whose last_keepalive_at is overdue."""
+        interval_s = self._interval_seconds()
+        now = time.time()
+        results = []
+        for acc in self.db.list_accounts():
+            if self._stop.is_set():
+                break
+            if not acc["enabled"]:
+                continue
+            last_ka = float(acc.get("last_keepalive_at") or 0.0)
+            if now - last_ka >= interval_s:
+                results.append(self.run_one(acc["id"]))
+        return results
 
     def run_one(self, account_id: str) -> dict[str, Any]:
         acc = self.db.get_account(account_id)

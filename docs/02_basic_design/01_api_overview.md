@@ -24,7 +24,7 @@
 | Nhóm | Endpoints chính |
 |---|---|
 | **Dashboard** | `GET /admin/dashboard` (health, pool summary, 7-day trend, recent tasks) |
-| **Accounts** | `GET /admin/accounts`, `POST /admin/accounts`, `PATCH /admin/accounts/{id}`, `DELETE /admin/accounts/{id}`, `POST /admin/accounts/{id}/refresh`, `POST /admin/accounts/refresh`, `POST /admin/accounts/{id}/test`, `POST /admin/accounts/{id}/quota`, `POST /admin/accounts/quota`, `GET /admin/accounts/export`, `POST /admin/accounts/{id}/keepalive`, `POST /admin/accounts/keepalive`, `GET /admin/extension/download` |
+| **Accounts** | `GET /admin/accounts`, `POST /admin/accounts`, `PATCH /admin/accounts/{id}`, `DELETE /admin/accounts/{id}`, `GET /admin/accounts/{id}/cookies`, `POST /admin/accounts/{id}/refresh`, `POST /admin/accounts/refresh`, `POST /admin/accounts/{id}/test`, `POST /admin/accounts/{id}/quota`, `POST /admin/accounts/quota`, `GET /admin/accounts/export`, `POST /admin/accounts/{id}/keepalive`, `POST /admin/accounts/keepalive`, `GET /admin/extension/download` |
 | **Proxies** | `GET /admin/proxies`, `POST /admin/proxies/import`, `POST /admin/proxies/{id}/check`, `POST /admin/proxies/check-all`, `DELETE /admin/proxies/{id}` |
 | **API Key** | `GET /admin/apikey`, `POST /admin/apikey/rotate` |
 | **Tasks & Media** | `GET /admin/tasks`, `DELETE /admin/tasks/{id}`, `POST /admin/tasks/clear`, `GET /admin/media`, `POST /admin/media/delete`, `DELETE /admin/media/{name}` |

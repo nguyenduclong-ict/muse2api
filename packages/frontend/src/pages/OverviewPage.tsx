@@ -127,25 +127,25 @@ export function OverviewPage() {
             <div className="py-8 text-center text-sm text-zinc-500">No accounts imported yet.</div>
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm">
+              <table className="w-full table-fixed text-left text-sm">
                 <thead>
                   <tr className="border-b border-zinc-800 text-xs text-zinc-400">
-                    <th className="py-2 pr-4 font-medium">Account</th>
-                    <th className="py-2 pr-4 font-medium">Status</th>
-                    <th className="py-2 pr-4 font-medium">Quota Remaining</th>
-                    <th className="py-2 pr-4 font-medium">WSS Tunnel</th>
-                    <th className="py-2 pr-4 font-medium">Keep-Alive</th>
-                    <th className="py-2 font-medium">Enabled</th>
+                    <th className="w-[22%] py-2 pr-3 font-medium">Account</th>
+                    <th className="w-[13%] py-2 pr-3 font-medium">Status</th>
+                    <th className="w-[27%] py-2 pr-3 font-medium">Quota Remaining</th>
+                    <th className="w-[14%] py-2 pr-3 font-medium">WSS Tunnel</th>
+                    <th className="w-[12%] py-2 pr-3 font-medium">Keep-Alive</th>
+                    <th className="w-[12%] py-2 font-medium">Enabled</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-zinc-800/60">
                   {data.accounts.map((acc) => (
                     <tr key={acc.id} className="hover:bg-zinc-800/30">
-                      <td className="py-2.5 pr-4">
-                        <div className="font-medium text-zinc-100">{acc.label}</div>
-                        <div className="font-mono text-[11px] text-zinc-500">{acc.id}</div>
+                      <td className="py-2.5 pr-3 min-w-0">
+                        <div className="truncate font-medium text-zinc-100" title={acc.label}>{acc.label}</div>
+                        <div className="truncate font-mono text-[11px] text-zinc-500" title={acc.id}>{acc.id}</div>
                       </td>
-                      <td className="py-2.5 pr-4">
+                      <td className="py-2.5 pr-3">
                         <Badge
                           variant={
                             acc.status === "healthy"
@@ -158,10 +158,10 @@ export function OverviewPage() {
                           {acc.status}
                         </Badge>
                       </td>
-                      <td className="py-2.5 pr-4">
+                      <td className="py-2.5 pr-3">
                         <QuotaBars quota={acc.quota} />
                       </td>
-                      <td className="py-2.5 pr-4">
+                      <td className="py-2.5 pr-3">
                         {acc.wss_connected ? (
                           <Badge variant="info">
                             <Wifi className="h-3 w-3" /> Connected
@@ -170,7 +170,7 @@ export function OverviewPage() {
                           <span className="text-xs text-zinc-500">Idle</span>
                         )}
                       </td>
-                      <td className="py-2.5 pr-4 text-xs text-zinc-400">{formatTimeAgo(acc.last_keepalive_at)}</td>
+                      <td className="py-2.5 pr-3 whitespace-nowrap text-xs text-zinc-400">{formatTimeAgo(acc.last_keepalive_at)}</td>
                       <td className="py-2.5">
                         <Badge variant={acc.enabled ? "success" : "default"}>
                           {acc.enabled ? "Enabled" : "Disabled"}

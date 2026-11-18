@@ -25,9 +25,9 @@
 ::: card Accounts List
 | Account | Status | Quota | Proxy | Keep-Alive | Enabled | Actions |
 |---|---|---|---|---|---|---|
-| **muse-01** | ((healthy)){success} | 30% bonus used (1.4B left) | No proxy | 2m ago | - [x] | [Edit] [Refresh] [Delete]{danger} |
-| **muse-02** | ((cooldown)){warning} | 85% weekly used | 1.2.3.4 | 18m ago | - [x] | [Edit] [Refresh] [Delete]{danger} |
-| **muse-03** | ((expired)){danger} | Unknown | No proxy | 1h ago | - [ ] | [Edit] [Refresh] [Delete]{danger} |
+| **muse-01** | ((healthy)){success} | 30% bonus used (1.4B left) | No proxy | 2m ago | - [x] | [Copy Cookie] [Edit] [Refresh] [Delete]{danger} |
+| **muse-02** | ((cooldown)){warning} | 85% weekly used | 1.2.3.4 | 18m ago | - [x] | [Copy Cookie] [Edit] [Refresh] [Delete]{danger} |
+| **muse-03** | ((expired)){danger} | Unknown | No proxy | 1h ago | - [ ] | [Copy Cookie] [Edit] [Refresh] [Delete]{danger} |
 :::
 
 ::: modal Import Account

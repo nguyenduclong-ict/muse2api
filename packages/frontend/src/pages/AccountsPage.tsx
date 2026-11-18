@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Download, HeartPulse, Pencil, Plus, Puzzle, RefreshCw, Trash2, Wifi } from "lucide-react";
+import { Copy, Download, HeartPulse, Pencil, Plus, Puzzle, RefreshCw, Trash2, Wifi } from "lucide-react";
 import {
   Badge,
   Button,
@@ -52,6 +52,7 @@ export function AccountsPage() {
   const [editEnabled, setEditEnabled] = useState(true);
 
   const [refreshId, setRefreshId] = useState<string | null>(null);
+  const [copyId, setCopyId] = useState<string | null>(null);
   const [delId, setDelId] = useState<string | null>(null);
 
   const { data, isLoading } = useQuery({
@@ -184,6 +185,19 @@ export function AccountsPage() {
     onSettled: () => setDelId(null),
   });
 
+  const handleCopyCookie = async (acc: AccountItem) => {
+    setCopyId(acc.id);
+    try {
+      const res = await apiFetch<{ cookie_header: string }>(`/admin/accounts/${acc.id}/cookies`);
+      await navigator.clipboard.writeText(res.cookie_header);
+      toast.success(`Copied cookies for ${acc.label}.`);
+    } catch (err) {
+      toast.error(`Copy cookies failed: ${(err as Error).message}`);
+    } finally {
+      setCopyId(null);
+    }
+  };
+
   const handleDownloadExtension = async () => {
     setDownloadingExt(true);
     try {
@@ -275,27 +289,29 @@ export function AccountsPage() {
             </div>
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full text-left text-sm">
+              <table className="w-full table-fixed text-left text-sm">
                 <thead>
                   <tr className="border-b border-zinc-800 text-xs text-zinc-400">
-                    <th className="py-2 pr-4 font-medium">Label</th>
-                    <th className="py-2 pr-4 font-medium">Status</th>
-                    <th className="py-2 pr-4 font-medium">Quota Remaining</th>
-                    <th className="py-2 pr-4 font-medium">WSS Tunnel</th>
-                    <th className="py-2 pr-4 font-medium">Proxy</th>
-                    <th className="py-2 pr-4 font-medium">Keep-Alive</th>
-                    <th className="py-2 pr-4 font-medium">Enabled</th>
-                    <th className="py-2 font-medium text-right">Actions</th>
+                    <th className="py-2 pr-2.5 font-medium">Label</th>
+                    <th className="w-[96px] py-2 pr-2.5 font-medium">Status</th>
+                    <th className="w-[184px] py-2 pr-2.5 font-medium">Quota Remaining</th>
+                    <th className="w-[104px] py-2 pr-2.5 font-medium">WSS Tunnel</th>
+                    <th className="w-[92px] py-2 pr-2.5 font-medium">Proxy</th>
+                    <th className="w-[78px] py-2 pr-2.5 font-medium">Keep-Alive</th>
+                    <th className="w-[60px] py-2 pr-2 font-medium">Enabled</th>
+                    <th className="w-[132px] py-2 pl-2 font-medium text-right sticky right-0 z-10 bg-zinc-900">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-zinc-800/60">
                   {accounts.map((acc) => (
-                    <tr key={acc.id} className="hover:bg-zinc-800/30">
-                      <td className="py-3 pr-4">
-                        <div className="font-medium text-zinc-100">{acc.label}</div>
-                        <div className="font-mono text-[11px] text-zinc-500">{acc.id} · {acc.cookie_count} cookies</div>
+                    <tr key={acc.id} className="group hover:bg-zinc-800/30">
+                      <td className="py-3 pr-2.5 min-w-0">
+                        <div className="truncate font-medium text-zinc-100" title={acc.label}>{acc.label}</div>
+                        <div className="truncate font-mono text-[11px] text-zinc-500" title={`${acc.id} · ${acc.cookie_count} cookies`}>
+                          {acc.id} · {acc.cookie_count} cookies
+                        </div>
                       </td>
-                      <td className="py-3 pr-4">
+                      <td className="py-3 pr-2.5 min-w-0">
                         <Badge
                           variant={
                             acc.status === "healthy"
@@ -308,15 +324,15 @@ export function AccountsPage() {
                           {acc.status}
                         </Badge>
                         {acc.last_error && (
-                          <div className="mt-1 max-w-[180px] truncate text-[11px] text-rose-400" title={acc.last_error}>
+                          <div className="mt-1 truncate text-[11px] text-rose-400" title={acc.last_error}>
                             {acc.last_error}
                           </div>
                         )}
                       </td>
-                      <td className="py-3 pr-4">
+                      <td className="py-3 pr-2.5">
                         <QuotaBars quota={acc.quota} />
                       </td>
-                      <td className="py-3 pr-4">
+                      <td className="py-3 pr-2.5">
                         {acc.wss_connected ? (
                           <Badge variant="info">
                             <Wifi className="h-3 w-3" /> Connected
@@ -325,40 +341,40 @@ export function AccountsPage() {
                           <span className="text-xs text-zinc-500">Idle</span>
                         )}
                       </td>
-                      <td className="py-3 pr-4 font-mono text-xs text-zinc-300">
+                      <td className="py-3 pr-2.5 min-w-0 font-mono text-xs text-zinc-300">
                         {!acc.has_proxy ? (
                           <span className="text-zinc-500">No proxy</span>
                         ) : acc.proxy_ip ? (
-                          <span title={acc.proxy_masked}>{acc.proxy_ip}</span>
+                          <div className="truncate" title={acc.proxy_masked}>{acc.proxy_ip}</div>
                         ) : (
-                          <span>{acc.proxy_masked}</span>
+                          <div className="truncate" title={acc.proxy_masked}>{acc.proxy_masked}</div>
                         )}
                       </td>
-                      <td className="py-3 pr-4 text-xs text-zinc-400">{formatTimeAgo(acc.last_keepalive_at)}</td>
-                      <td className="py-3 pr-4">
+                      <td className="py-3 pr-2.5 whitespace-nowrap text-xs text-zinc-400">{formatTimeAgo(acc.last_keepalive_at)}</td>
+                      <td className="py-3 pr-2">
                         <Switch
                           checked={acc.enabled}
                           onCheckedChange={(v) => toggleMut.mutate({ id: acc.id, enabled: v })}
                         />
                       </td>
-                      <td className="py-3 text-right">
-                        <div className="inline-flex items-center gap-1.5">
+                      <td className="py-3 pl-2 text-right sticky right-0 z-10 bg-zinc-900 group-hover:bg-zinc-800">
+                        <div className="inline-flex items-center justify-end gap-1">
                           <Button
                             size="sm"
                             variant="outline"
                             onClick={() => openEditModal(acc)}
                             title="Edit account"
                           >
-                            <Pencil className="h-3.5 w-3.5" /> Edit
+                            <Pencil className="h-3.5 w-3.5" />
                           </Button>
                           <Button
                             size="sm"
                             variant="outline"
                             loading={refreshId === acc.id}
                             onClick={() => refreshOneMut.mutate(acc.id)}
-                            title="Check status, WSS tunnel & quota"
+                            title="Refresh status, WSS tunnel & quota"
                           >
-                            <RefreshCw className="h-3.5 w-3.5" /> Refresh
+                            <RefreshCw className="h-3.5 w-3.5" />
                           </Button>
                           <Button
                             size="sm"
@@ -447,7 +463,18 @@ export function AccountsPage() {
                 />
               </div>
               <div className="space-y-1.5">
-                <label className="text-xs font-medium text-zinc-300">New Cookie String or JSON (Optional)</label>
+                <div className="flex items-center justify-between gap-2">
+                  <label className="text-xs font-medium text-zinc-300">New Cookie String or JSON (Optional)</label>
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    loading={copyId === editingAcc.id}
+                    onClick={() => handleCopyCookie(editingAcc)}
+                    title="Copy current cookie string to clipboard"
+                  >
+                    <Copy className="h-3.5 w-3.5" /> Copy Cookie String
+                  </Button>
+                </div>
                 <Textarea
                   rows={4}
                   className="font-mono text-xs"

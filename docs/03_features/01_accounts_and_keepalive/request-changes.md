@@ -1,5 +1,15 @@
 # Request changes: Accounts & Keep-Alive
 
+## 2026-11-18 — Import Cookie vào Extension & Copy Cookie từ Account
+
+- **Yêu cầu:** Thêm chức năng import cookie vào Chrome Extension (`extension/`) và thêm nút Copy Cookie trên từng tài khoản ở màn Accounts để dán vào extension.
+- **Phân loại:** Feature mở rộng
+- **Đặc tả thay đổi:**
+  - `spec.md`: cập nhật `FR-009`, bổ sung `FR-012`, `AC-012`.
+  - `design.md`: thêm nút `Copy Cookie` vào bảng Accounts.
+  - `01_api_overview.md`: bổ sung `GET /admin/accounts/{id}/cookies`.
+- **Task:** [T-011](../../04_tasks/011_extension_import_and_copy_cookie/plan.md)
+
 ## 2026-11-17 — Edit Account Modal, Unified Refresh, Proxy Display & WSS Tunnel Daemon
 
 - **Yêu cầu:** Thêm nút Edit Account (mở modal chỉnh sửa), cột Proxy bỏ `<select>` và hiển thị `No proxy` hoặc `proxy_ip`, bỏ nút `Quota` và `Test WSS` riêng lẻ, nút `Refresh` kiểm tra đồng bộ trạng thái + WSS + quota, và WSS Tunnel tự chạy ngầm ở backend để cập nhật trạng thái lên frontend.

@@ -13,7 +13,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
-from muse_wss import fetch_quota_http
+from muse_wss import cookies_to_header, fetch_quota_http
 from services.cookie_parser import mask_cookies, mask_proxy, parse_cookies
 
 router = APIRouter(prefix="/admin", tags=["accounts"])
@@ -200,6 +200,20 @@ def patch_account(account_id: str, body: AccountPatchReq, request: Request):
 
     updated = db.update_account(account_id, **updates)
     return {"account": _serialize_account(updated, pool.is_connected(account_id))}
+
+
+@router.get("/accounts/{account_id}/cookies")
+def get_account_cookies(account_id: str, request: Request):
+    acc = request.app.state.db.get_account(account_id)
+    if not acc:
+        raise HTTPException(status_code=404, detail="Account not found")
+    cookies = json.loads(acc.get("cookies_json") or "{}")
+    return {
+        "id": acc["id"],
+        "label": acc["label"],
+        "cookie_header": cookies_to_header(cookies),
+        "cookies": cookies,
+    }
 
 
 @router.delete("/accounts/{account_id}")

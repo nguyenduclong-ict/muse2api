@@ -245,6 +245,43 @@ def websocket_proxy_kwargs(proxy_url: str) -> dict[str, Any]:
     return kw
 
 
+def wake_vm_http(
+    cookies: dict[str, str],
+    vm_id: str,
+    proxy_url: str = "",
+    retry_count: int = 0,
+    timeout: float = 15.0,
+) -> dict[str, Any]:
+    """Wake sleeping muse.ai VM with required same-origin headers."""
+    headers = {
+        "Cookie": cookies_to_header(cookies),
+        "User-Agent": USER_AGENT,
+        "Accept": "*/*",
+        "Content-Type": "application/json",
+        "Origin": "https://muse.ai",
+        "Referer": "https://muse.ai/thread/new",
+        "sec-fetch-site": "same-origin",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-dest": "empty",
+    }
+    proxies = requests_proxies(proxy_url)
+    r = requests.post(
+        "https://muse.ai/api/hatch/vm/wake",
+        headers=headers,
+        json={"vm_id": vm_id, "retry_count": retry_count},
+        proxies=proxies,
+        timeout=timeout,
+    )
+    if r.status_code == 401:
+        raise MuseAuthError("Session expired (/api/hatch/vm/wake HTTP 401)")
+    if not r.ok:
+        raise MuseWSSError(f"/api/hatch/vm/wake HTTP {r.status_code}: {r.text[:150]}")
+    try:
+        return r.json()
+    except Exception:
+        return {"status": r.text}
+
+
 def renew_session_http(cookies: dict[str, str], proxy_url: str = "", timeout: float = 20.0) -> dict[str, Any]:
     """Call muse.ai/api/session and wake VM if sleeping."""
     headers = {
@@ -263,15 +300,10 @@ def renew_session_http(cookies: dict[str, str], proxy_url: str = "", timeout: fl
         raise MuseAuthError(f"/api/session status={data.get('status')!r}")
 
     vm_state = data.get("vm_state", "")
-    if vm_state and vm_state.upper() != "RUNNING":
+    vm_id = data.get("vm_id") or ""
+    if vm_id and vm_state and vm_state.upper() != "RUNNING":
         try:
-            requests.post(
-                "https://muse.ai/api/hatch/vm/wake",
-                headers={**headers, "Content-Type": "application/json"},
-                json={"vm_id": data.get("vm_id")},
-                proxies=proxies,
-                timeout=timeout,
-            )
+            wake_vm_http(cookies, vm_id, proxy_url=proxy_url, retry_count=0, timeout=timeout)
         except Exception:
             pass
     return data
@@ -377,36 +409,97 @@ class MuseWSSClient:
         if r.status_code != 200:
             raise MuseWSSError(f"Bootstrap /thread/new HTTP {r.status_code}")
 
-        m = re.search(r"__HATCH_GATEWAY_INIT__\s*=\s*(\{.*?\});", r.text)
-        if not m:
+        all_m = re.findall(r"__HATCH_GATEWAY_INIT__\s*=\s*(\{.*?\});", r.text)
+        last_obj: dict[str, Any] | None = None
+        for raw in all_m:
+            cur = raw
+            for _ in range(4):
+                try:
+                    parsed = json.loads(cur)
+                    if isinstance(parsed, dict):
+                        last_obj = parsed
+                        if parsed.get("vmName") and parsed.get("authToken") and parsed.get("noiseNotaryToken"):
+                            return parsed
+                        break
+                except json.JSONDecodeError:
+                    pass
+                if cur.startswith("{\\"):
+                    cur = cur.replace("\\\\", "\\").replace('\\"', '"')
+                else:
+                    break
+
+        # Fallback: extract tokens directly from Next.js RSC payload when __HATCH_GATEWAY_INIT__ has null tokens
+        vm_m = re.search(r'vmName["\\]*:\s*["\\]*([0-9a-f-]{36})', r.text)
+        tok_m = re.search(r"(muse-secret-edge-[A-Za-z0-9_.-]+)", r.text)
+        notary_m = re.search(r"(endorsement\.v1\.[A-Za-z0-9_.+/=-]+)", r.text)
+        if vm_m and tok_m and notary_m:
+            return {
+                **(last_obj or {}),
+                "vmName": vm_m.group(1),
+                "authToken": tok_m.group(1),
+                "noiseNotaryToken": notary_m.group(1),
+            }
+
+        if not all_m:
             raise MuseAuthError("Missing __HATCH_GATEWAY_INIT__ in /thread/new (not logged in)")
-        raw = m.group(1)
-        if raw.startswith('{\\"'):
-            raw = raw.replace('\\"', '"').replace("\\\\", "\\")
-        return json.loads(raw)
+        return last_obj or {}
 
     def connect(self, timeout: float = 25.0) -> None:
+        for attempt in range(3):
+            try:
+                self._connect_once(timeout=timeout)
+                return
+            except MuseWSSError as exc:
+                if attempt < 2 and "fail_ip_registry_not_found" in str(exc) and self.vm_name:
+                    try:
+                        wake_vm_http(
+                            self.cookies,
+                            self.vm_name,
+                            proxy_url=self.proxy_url,
+                            retry_count=attempt,
+                            timeout=10.0,
+                        )
+                    except Exception:
+                        pass
+                    time.sleep(3.5)
+                    continue
+                raise
+
+    def _connect_once(self, timeout: float = 25.0) -> None:
         self.close()
         init = self._bootstrap(timeout=timeout)
-        self.vm_name = init["vmName"]
+        self.vm_name = init.get("vmName") or ""
+        auth_token = init.get("authToken")
+        notary_token = init.get("noiseNotaryToken")
+        if not self.vm_name or not auth_token or not notary_token:
+            raise MuseWSSError("VM not ready (missing authToken/noiseNotaryToken)")
         qs = urllib.parse.urlencode(
             {
                 "vm_id": self.vm_name,
-                "auth_token": init["authToken"],
-                "notary_token": init["noiseNotaryToken"],
+                "auth_token": auth_token,
+                "notary_token": notary_token,
                 "app_id": "hatch-web",
                 "app_version": "1",
                 "request_id": str(uuid.uuid4()),
             }
         )
         ws_url = f"wss://hatch.metaaivm.com/v1/noise?{qs}"
-        ws = websocket.create_connection(
-            ws_url,
-            origin="https://muse.ai",
-            header=[f"User-Agent: {USER_AGENT}", f"Cookie: {cookies_to_header(self.cookies)}"],
-            timeout=timeout,
-            **websocket_proxy_kwargs(self.proxy_url),
-        )
+        try:
+            ws = websocket.create_connection(
+                ws_url,
+                origin="https://muse.ai",
+                header=[f"User-Agent: {USER_AGENT}", f"Cookie: {cookies_to_header(self.cookies)}"],
+                timeout=timeout,
+                **websocket_proxy_kwargs(self.proxy_url),
+            )
+        except websocket.WebSocketBadStatusException as exc:
+            headers = getattr(exc, "resp_headers", None) or {}
+            res_status = headers.get("x-hatch-resolution-status") or headers.get("X-Hatch-Resolution-Status") or ""
+            status_code = getattr(exc, "status_code", 0)
+            if status_code == 401:
+                raise MuseAuthError("WSS handshake HTTP 401 (unauthorized)") from exc
+            detail = f" ({res_status})" if res_status else ""
+            raise MuseWSSError(f"WSS handshake HTTP {status_code}{detail}") from exc
         noise = NoiseXX()
         ws.send(noise.write_message_1(pb_bytes(1, os.urandom(32))), opcode=websocket.ABNF.OPCODE_BINARY)
         noise.read_message_2(ws.recv())
