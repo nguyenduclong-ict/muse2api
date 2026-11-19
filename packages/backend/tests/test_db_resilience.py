@@ -1,8 +1,10 @@
-"""Unit tests for SQLite persistence resilience (journal mode detection, connection reuse, retries, concurrency)."""
+"""Unit tests for SQLite persistence resilience (journal mode detection, connection reuse, retries, concurrency, integrity rebuild)."""
 
+import glob
 import os
 import shutil
 import sqlite3
+import struct
 import sys
 import tempfile
 import unittest
@@ -14,8 +16,42 @@ if _BACKEND_DIR not in sys.path:
     sys.path.insert(0, _BACKEND_DIR)
 
 from config import Config
-from db import Database, resolve_journal_mode
+from db import Database, _check_db_integrity, resolve_journal_mode
 from routers.v1_openai import _safe_fail_task
+
+
+def _corrupt_freelist_trunk(db_path: str) -> None:
+    """Create free pages in db_path and corrupt its freelist trunk leaf count."""
+    conn = sqlite3.connect(db_path, timeout=30.0)
+    try:
+        payload = '{"pad":"' + ("x" * 1024) + '"}'
+        for i in range(60):
+            conn.execute(
+                """
+                INSERT INTO tasks (id, type, status, account_id, model, prompt_preview, input_request_json, created_at, updated_at)
+                VALUES (?, 'audio', 'completed', '', 'tts-1', 'dummy', ?, 1.0, 1.0)
+                """,
+                (f"dummy_{i}", payload),
+            )
+        conn.commit()
+        conn.execute("DELETE FROM tasks WHERE id LIKE 'dummy_%'")
+        conn.commit()
+        conn.execute("PRAGMA wal_checkpoint(TRUNCATE);").fetchall()
+        conn.execute("PRAGMA journal_mode=DELETE;").fetchall()
+    finally:
+        conn.close()
+
+    with open(db_path, "r+b") as f:
+        header = f.read(100)
+        page_size = struct.unpack(">H", header[16:18])[0]
+        if page_size == 1:
+            page_size = 65536
+        trunk_page = struct.unpack(">I", header[32:36])[0]
+        assert trunk_page > 0, f"Expected non-zero freelist trunk page, got {trunk_page}"
+        # SQLite freelist trunk layout: bytes [0:4] = next trunk page, bytes [4:8] = leaf count
+        f.seek((trunk_page - 1) * page_size + 4)
+        f.write(struct.pack(">I", 99999))
+        f.flush()
 
 
 class TestSQLiteResilience(unittest.TestCase):
@@ -241,6 +277,115 @@ class TestSQLiteResilience(unittest.TestCase):
                 Config(data_dir=self.tmpdir, db_path_override=custom_db).db_path,
                 custom_db,
             )
+
+    def test_startup_auto_rebuilds_corrupt_freelist_db(self):
+        db = Database(self.cfg)
+        try:
+            db.create_proxy("prx_1", "http://127.0.0.1:8080", "http")
+            db.create_account(
+                account_id="acc_1",
+                label="acc-one",
+                cookies={"hatch_sess": "abc"},
+                proxy_id="prx_1",
+                enabled=True,
+                status="healthy",
+            )
+            db.add_keepalive_log("acc_1", "ok", vm_state="running", message="healthy")
+            db.create_task(
+                "tsk_keep",
+                "audio",
+                status="completed",
+                account_id="acc_1",
+                model="tts-1",
+                prompt_preview="keep me",
+            )
+            db.update_setting("voice_languages", {"enabled": True, "languages": ["Vietnamese"]})
+        finally:
+            db.close()
+
+        _corrupt_freelist_trunk(self.cfg.db_path)
+
+        ok, msgs = _check_db_integrity(self.cfg.db_path)
+        self.assertFalse(ok)
+        self.assertTrue(any("freelist" in m.lower() for m in msgs), f"Unexpected integrity messages: {msgs}")
+
+        db2 = Database(self.cfg)
+        self.addCleanup(db2.close)
+
+        self.assertEqual(_check_db_integrity(self.cfg.db_path), (True, ["ok"]))
+        backups = glob.glob(f"{self.cfg.db_path}.corrupt.*.bak")
+        self.assertGreaterEqual(len(backups), 1)
+
+        self.assertEqual(db2.get_api_key()["raw_key"], "m2a_resilience_key")
+        acc = db2.get_account("acc_1")
+        self.assertIsNotNone(acc)
+        self.assertEqual(acc["proxy_id"], "prx_1")
+        proxies = db2.list_proxies()
+        self.assertEqual(len(proxies), 1)
+        self.assertEqual(proxies[0]["id"], "prx_1")
+        logs = db2.list_keepalive_logs()
+        self.assertEqual(len(logs), 1)
+        self.assertEqual(logs[0]["account_id"], "acc_1")
+        tsk = db2.get_task("tsk_keep")
+        self.assertIsNotNone(tsk)
+        self.assertEqual(tsk["prompt_preview"], "keep me")
+        self.assertEqual(
+            db2.get_settings()["voice_languages"],
+            {"enabled": True, "languages": ["Vietnamese"]},
+        )
+
+        # Ensure subsequent writes succeed cleanly without freelist errors
+        created = db2.create_task("tsk_after_repair", "audio", status="running", model="tts-1")
+        self.assertEqual(created["id"], "tsk_after_repair")
+
+    def test_legacy_migration_auto_rebuilds_corrupt_source_db(self):
+        data_dir = os.path.join(self.tmpdir, "legacy_corrupt_data")
+        db_dir = os.path.join(self.tmpdir, "clean_target_db")
+        os.makedirs(data_dir, exist_ok=True)
+        os.makedirs(db_dir, exist_ok=True)
+
+        legacy_cfg = Config(data_dir=data_dir, initial_api_key="m2a_corrupt_legacy")
+        legacy_db = Database(legacy_cfg)
+        try:
+            legacy_db.create_account(
+                account_id="acc_legacy",
+                label="legacy-account",
+                cookies={"hatch_sess": "legacy"},
+                enabled=True,
+                status="healthy",
+            )
+            legacy_db.create_task(
+                "tsk_legacy",
+                "image",
+                status="completed",
+                account_id="acc_legacy",
+                model="gpt-image-1",
+                prompt_preview="legacy task",
+            )
+        finally:
+            legacy_db.close()
+
+        legacy_db_path = os.path.join(data_dir, "muse2apiv2.db")
+        _corrupt_freelist_trunk(legacy_db_path)
+
+        custom_db_path = os.path.join(db_dir, "muse2apiv2.db")
+        db2 = Database(Config(data_dir=data_dir, db_path_override=custom_db_path))
+        self.addCleanup(db2.close)
+
+        self.assertEqual(_check_db_integrity(custom_db_path), (True, ["ok"]))
+        self.assertEqual(db2.get_api_key()["raw_key"], "m2a_corrupt_legacy")
+        self.assertIsNotNone(db2.get_account("acc_legacy"))
+        self.assertIsNotNone(db2.get_task("tsk_legacy"))
+        created = db2.create_task("tsk_new_after_mig", "audio", status="running", model="tts-1")
+        self.assertEqual(created["id"], "tsk_new_after_mig")
+
+    def test_check_db_integrity_does_not_misclassify_operational_error(self):
+        fake_conn = MagicMock()
+        fake_conn.execute.side_effect = sqlite3.OperationalError("database is locked")
+        with patch("db.sqlite3.connect", return_value=fake_conn):
+            with self.assertRaises(sqlite3.OperationalError):
+                _check_db_integrity(self.cfg.db_path)
+        fake_conn.close.assert_called_once()
 
 
 if __name__ == "__main__":

@@ -213,8 +213,121 @@ def parse_supported_models(raw: str | list[str] | None) -> list[str]:
     return ordered or list(SUPPORTED_MODEL_TYPES)
 
 
+def _remove_sqlite_sidecars(db_path: str) -> None:
+    """Remove SQLite WAL/SHM/journal sidecar files for db_path if present."""
+    for suffix in ("-wal", "-shm", "-journal"):
+        sidecar = f"{db_path}{suffix}"
+        try:
+            if os.path.exists(sidecar):
+                os.remove(sidecar)
+        except OSError:
+            pass
+
+
+def _remove_file_and_sidecars(path: str) -> None:
+    """Remove a SQLite file and its sidecar files if present."""
+    try:
+        if os.path.exists(path):
+            os.remove(path)
+    except OSError:
+        pass
+    _remove_sqlite_sidecars(path)
+
+
+def _check_db_integrity(db_path: str) -> tuple[bool, list[str]]:
+    """Run PRAGMA integrity_check(10) and return (is_ok, messages)."""
+    conn: sqlite3.Connection | None = None
+    try:
+        conn = sqlite3.connect(db_path, timeout=30.0)
+        rows = conn.execute("PRAGMA integrity_check(10);").fetchall()
+        msgs = [str(r[0]) for r in rows] if rows else []
+        is_ok = len(msgs) == 1 and msgs[0].lower() == "ok"
+        return is_ok, msgs
+    except sqlite3.OperationalError:
+        # Lock / I/O errors are not structural DB corruption.
+        raise
+    except sqlite3.DatabaseError as exc:
+        return False, [str(exc)]
+    finally:
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+
+def _rebuild_sqlite_via_dump(src_path: str, dst_path: str) -> None:
+    """Rebuild src_path into dst_path by replaying conn.iterdump() statements."""
+    _remove_file_and_sidecars(dst_path)
+    src_conn: sqlite3.Connection | None = None
+    dst_conn: sqlite3.Connection | None = None
+    succeeded = False
+    try:
+        src_conn = sqlite3.connect(src_path, timeout=30.0)
+        dst_conn = sqlite3.connect(dst_path, timeout=30.0, isolation_level=None)
+        dst_conn.execute("PRAGMA foreign_keys=OFF;")
+        for stmt in src_conn.iterdump():
+            dst_conn.execute(stmt)
+        succeeded = True
+    finally:
+        for conn in (dst_conn, src_conn):
+            if conn is not None:
+                try:
+                    conn.close()
+                except Exception:
+                    pass
+        if not succeeded:
+            _remove_file_and_sidecars(dst_path)
+
+    ok, msgs = _check_db_integrity(dst_path)
+    if not ok:
+        _remove_file_and_sidecars(dst_path)
+        raise sqlite3.DatabaseError(f"Rebuilt SQLite database still failed integrity_check: {msgs}")
+    _remove_sqlite_sidecars(dst_path)
+
+
+def _ensure_db_integrity(db_path: str) -> bool:
+    """Check db_path integrity and rebuild logically from dump if corrupted."""
+    if not os.path.isfile(db_path) or os.path.getsize(db_path) == 0:
+        return False
+    ok, msgs = _check_db_integrity(db_path)
+    if ok:
+        return False
+
+    logger.warning(
+        "SQLite integrity check failed for %s (%s); attempting logical rebuild",
+        db_path,
+        "; ".join(msgs[:5]),
+    )
+    rebuilt_path = f"{db_path}.rebuilding"
+    _rebuild_sqlite_via_dump(db_path, rebuilt_path)
+
+    backup_base = f"{db_path}.corrupt.{int(time.time())}.bak"
+    try:
+        shutil.copy2(db_path, backup_base)
+        wal_path = f"{db_path}-wal"
+        if os.path.isfile(wal_path) and os.path.getsize(wal_path) > 0:
+            shutil.copy2(wal_path, f"{backup_base}-wal")
+    except OSError as exc:
+        logger.warning("Failed to save corrupt DB backup to %s: %s", backup_base, exc)
+
+    try:
+        _remove_sqlite_sidecars(db_path)
+        os.replace(rebuilt_path, db_path)
+    except Exception:
+        _remove_file_and_sidecars(rebuilt_path)
+        raise
+
+    logger.warning(
+        "Successfully rebuilt corrupted SQLite database %s (backup saved to %s)",
+        db_path,
+        backup_base,
+    )
+    return True
+
+
 def _migrate_legacy_db_if_needed(cfg: Config) -> bool:
-    """One-time copy of data/muse2apiv2.db to custom db_path when target does not exist yet."""
+    """One-time copy (or logical rebuild) of data/muse2apiv2.db to custom db_path."""
     dst = os.path.abspath(cfg.db_path)
     legacy = os.path.abspath(os.path.join(cfg.data_dir, "muse2apiv2.db"))
     os.makedirs(os.path.dirname(dst), exist_ok=True)
@@ -222,22 +335,49 @@ def _migrate_legacy_db_if_needed(cfg: Config) -> bool:
         return False
 
     tmp_dst = f"{dst}.migrating"
+    rebuilt_tmp = f"{dst}.migrating.rebuilt"
+    _remove_file_and_sidecars(tmp_dst)
+    _remove_file_and_sidecars(rebuilt_tmp)
     try:
         shutil.copy2(legacy, tmp_dst)
-        os.replace(tmp_dst, dst)
+        legacy_wal = f"{legacy}-wal"
+        if os.path.isfile(legacy_wal) and os.path.getsize(legacy_wal) > 0:
+            shutil.copy2(legacy_wal, f"{tmp_dst}-wal")
+
+        ok, msgs = _check_db_integrity(tmp_dst)
+        if ok:
+            if os.path.exists(f"{tmp_dst}-wal"):
+                ckpt_conn: sqlite3.Connection | None = None
+                try:
+                    ckpt_conn = sqlite3.connect(tmp_dst, timeout=30.0)
+                    ckpt_conn.execute("PRAGMA wal_checkpoint(TRUNCATE);").fetchall()
+                finally:
+                    if ckpt_conn is not None:
+                        try:
+                            ckpt_conn.close()
+                        except Exception:
+                            pass
+                _remove_sqlite_sidecars(tmp_dst)
+            _remove_sqlite_sidecars(dst)
+            os.replace(tmp_dst, dst)
+            logger.info("Migrated legacy SQLite database from %s to %s", legacy, dst)
+        else:
+            logger.warning(
+                "Legacy SQLite database %s failed integrity check (%s); rebuilding logically during migration to %s",
+                legacy,
+                "; ".join(msgs[:5]),
+                dst,
+            )
+            _rebuild_sqlite_via_dump(tmp_dst, rebuilt_tmp)
+            _remove_file_and_sidecars(tmp_dst)
+            _remove_sqlite_sidecars(dst)
+            os.replace(rebuilt_tmp, dst)
+            logger.info("Migrated and logically rebuilt legacy SQLite database from %s to %s", legacy, dst)
     except Exception:
-        try:
-            if os.path.exists(tmp_dst):
-                os.remove(tmp_dst)
-        except OSError:
-            pass
+        _remove_file_and_sidecars(tmp_dst)
+        _remove_file_and_sidecars(rebuilt_tmp)
         raise
 
-    legacy_wal = f"{legacy}-wal"
-    if os.path.isfile(legacy_wal) and os.path.getsize(legacy_wal) > 0:
-        shutil.copy2(legacy_wal, f"{dst}-wal")
-
-    logger.info("Migrated legacy SQLite database from %s to %s", legacy, dst)
     return True
 
 
@@ -249,6 +389,7 @@ class Database:
         os.makedirs(cfg.data_dir, exist_ok=True)
         os.makedirs(cfg.media_dir, exist_ok=True)
         _migrate_legacy_db_if_needed(cfg)
+        _ensure_db_integrity(cfg.db_path)
         self._lock = threading.RLock()
         self._conn: sqlite3.Connection | None = None
         self.journal_mode: str = resolve_journal_mode(cfg.db_path)
