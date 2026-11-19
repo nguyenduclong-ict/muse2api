@@ -63,15 +63,19 @@ def _env_float(key: str, default: float, lo: float | None = None, hi: float | No
     return val
 
 
+def _default_data_dir() -> str:
+    return os.path.join(_PROJECT_ROOT, _env("MUSE2API_DATA_DIR", "data"))
+
+
 @dataclass
 class Config:
     project_root: str = _PROJECT_ROOT
     host: str = field(default_factory=lambda: _env("MUSE2API_HOST", "0.0.0.0"))
     port: int = field(default_factory=lambda: _env_int("MUSE2API_PORT", 18610, 1, 65535))
     initial_api_key: str = field(default_factory=lambda: _env("MUSE2API_KEY", "").strip())
-    data_dir: str = field(
-        default_factory=lambda: os.path.join(_PROJECT_ROOT, _env("MUSE2API_DATA_DIR", "data"))
-    )
+    data_dir: str = field(default_factory=_default_data_dir)
+    db_path_override: str | None = None
+    _default_data_dir_snapshot: str = field(default_factory=_default_data_dir, init=False, repr=False)
     keepalive_interval_minutes: int = field(
         default_factory=lambda: _env_int("MUSE2API_KEEPALIVE_INTERVAL_MINUTES", 20, 5)
     )
@@ -108,6 +112,14 @@ class Config:
 
     @property
     def db_path(self) -> str:
+        override = (self.db_path_override or "").strip()
+        if not override and self.db_path_override is None:
+            if os.path.abspath(self.data_dir) == os.path.abspath(self._default_data_dir_snapshot):
+                override = _env("MUSE2API_DB_PATH", "").strip()
+        if override:
+            if os.path.isabs(override):
+                return override
+            return os.path.join(self.project_root, override)
         return os.path.join(self.data_dir, "muse2apiv2.db")
 
     @property

@@ -90,6 +90,7 @@ class TestTaskInputRequestStorage(unittest.TestCase):
         conn.close()
 
         db = Database(self.cfg)
+        self.addCleanup(db.close)
         conn2 = sqlite3.connect(self.cfg.db_path)
         col_names = {r[1] for r in conn2.execute("PRAGMA table_info(tasks)").fetchall()}
         conn2.close()
@@ -115,6 +116,7 @@ class TestTaskInputRequestStorage(unittest.TestCase):
 
     def test_list_excludes_input_request_and_get_task_parses_it(self):
         db = Database(self.cfg)
+        self.addCleanup(db.close)
         db.create_task(
             "tsk_001",
             "chat",
@@ -134,6 +136,7 @@ class TestTaskInputRequestStorage(unittest.TestCase):
 
     def test_admin_and_v1_endpoints_persist_and_serve_input_request(self):
         db = Database(self.cfg)
+        self.addCleanup(db.close)
         pool = MagicMock()
         pool.ensure_capability.return_value = True
         pool.execute_chat.return_value = ("acc_1", "sess_1", "Hi there!")

@@ -145,12 +145,15 @@ class TestSupportedModelsHelpersAndMigration(unittest.TestCase):
             conn.close()
 
             db = Database(cfg)
-            acc = db.get_account("acc_legacy")
-            self.assertIsNotNone(acc)
-            self.assertEqual(
-                parse_supported_models(acc.get("supported_models_json")),
-                ["chat", "image", "video", "speech"],
-            )
+            try:
+                acc = db.get_account("acc_legacy")
+                self.assertIsNotNone(acc)
+                self.assertEqual(
+                    parse_supported_models(acc.get("supported_models_json")),
+                    ["chat", "image", "video", "speech"],
+                )
+            finally:
+                db.close()
 
 
 class TestAdminAccountsSupportedModelsAPI(unittest.TestCase):
@@ -172,6 +175,7 @@ class TestAdminAccountsSupportedModelsAPI(unittest.TestCase):
         app.state.cfg = self._orig_cfg
         app.state.db = self._orig_db
         app.state.wss_pool = self._orig_pool
+        self.db.close()
         self._tmpdir.cleanup()
 
     def _json_headers(self):
@@ -310,6 +314,7 @@ class TestCapabilityRoutingAndFailFast503(unittest.TestCase):
         app.state.cfg = self._orig_cfg
         app.state.db = self._orig_db
         app.state.wss_pool = self._orig_pool
+        self.db.close()
         self._tmpdir.cleanup()
 
     def _v1_headers(self):

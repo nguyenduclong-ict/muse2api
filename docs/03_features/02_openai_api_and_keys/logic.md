@@ -85,12 +85,13 @@ sequenceDiagram
    - `POST /v1/audio/speech`:
      - Phân giải `voice_info = resolve_voice(body.voice)` (trả `400` nếu không tồn tại trong catalog).
      - Nếu `allowed_languages` khác rỗng và `get_voice_language_group(voice_info).lower() not in allowed_languages`: trả ngay `400 Bad Request` (`invalid_request_error`) nêu rõ giọng `{voice_info['name']}` thuộc ngôn ngữ `{lang_group}` hiện không nằm trong danh sách ngôn ngữ được bật trong Settings (không fallback ngay cả khi client bỏ trống `voice`).
-5. **Xây dựng Prompt TTS & Trích xuất Audio từ Muse (`BR-107`, `BR-108`):**
-   - Validate `input` (`1 <= len(input.strip()) <= 4096`) và `response_format.lower() in {"mp3", "url", "json"}`; nếu sai trả `400`.
-   - Ghép prompt TTS theo template chuẩn trong `services/voice_preview.py::build_speech_prompt` (truyền `skip_system_prompt=True` khi gọi `wss_pool.generate_media(..., expect_kind="audio")`):
+5. **Xây dựng Prompt TTS, Trích xuất Audio từ Muse & Fallback Convert (`BR-107`, `BR-108`):**
+   - Validate `input` (`1 <= len(input.strip()) <= 4096`) và `response_format.lower() in {"mp3", "wav", "url", "json"}`; nếu sai trả `400`.
+   - Ghép prompt TTS theo template chuẩn trong `services/voice_preview.py::build_speech_prompt` (truyền `skip_system_prompt=True` khi gọi `wss_pool.generate_media(..., expect_kind="audio")` và `output_format="wav"` nếu `response_format == "wav"`, mặc định `"mp3"`):
      ```text
-     Generate an MP3 audio speech file using voice "{voice_id}" ({voice_name}).
+     Generate {an MP3 | a WAV (16-bit PCM)} audio speech file using voice "{voice_id}" ({voice_name}).
      Language: {language_code}. Speed: {speed_pct}.
+     Audio output: normalize to -16 LUFS, true peak max -1.5 dB, do not clip.
      Style / delivery instructions: {instructions}  # chỉ thêm khi instructions không rỗng
 
      Do NOT read any bracket tags literally. Convert them to spoken sounds or delivery cues first (keep sounds lowercase and comma-separated, without exclamation marks, so delivery stays soft and natural):
@@ -107,11 +108,15 @@ sequenceDiagram
      - [angry], [sad], [happy], [excited] → adjust pacing and tone to match the mood
      - Any other [tag] → omit the tag, do not speak it literally
 
-     Then speak this text, with the converted sounds in place:
+     Then speak this text with the converted sounds in place, don't ask any more questions:
      "{input}"
      ```
      Trong đó `language_code` được ánh xạ từ `get_voice_language_code(voice_info)` (mặc định `en`), và `speed_pct` quy đổi hệ số `speed` sang phần trăm (mặc định `100`, ví dụ `1.25` → `125`).
    - Trong `WSSPool._fetch_media_from_history(..., expect_kind="audio")`:
      - Ưu tiên chọn resource có `kind` chứa `"audio"` hoặc `mime_type` bắt đầu bằng `"audio/"` hoặc đuôi path thuộc `{".mp3", ".wav", ".ogg", ".m4a"}`; đồng thời kiểm tra cả `payload.data.audios` / `payload.data.audio` / `payload.data.files` nếu có.
-     - Mặc định phần mở rộng `.mp3` (`mime_type = "audio/mpeg"`), lưu vào `data/media/aud_<hex>.mp3`.
-   - Với `response_format == "mp3"`, trả `FileResponse` / `Response` binary kèm header `Content-Type: audio/mpeg` và `X-Muse-Media-Url: /v1/media/<filename>`; với `"url"` hoặc `"json"`, trả JSON metadata kèm đường dẫn đầy đủ.
+     - Mặc định phần mở rộng `.mp3` (`mime_type = "audio/mpeg"`), lưu vào `data/media/aud_<hex>.<ext>`.
+   - Xác thực định dạng thực tế & fallback `ffmpeg` trong `services/audio_format.py::ensure_audio_file_format` (chỉ áp dụng khi `response_format` là `"mp3"` hoặc `"wav"`):
+     - Kiểm tra magic bytes / header thực tế: với `"wav"` phải là `RIFF...WAVE` nén `NONE` 16-bit PCM (`is_pcm16_wav`); với `"mp3"` phải có header `ID3` hoặc MPEG audio sync frame hợp lệ (`detect_audio_format == "mp3"`).
+     - Nếu khớp định dạng đích (và nếu lệch đuôi file thì đổi tên nguyên tử sang `.<fmt>`), không chạy `ffmpeg` (`X-Audio-Converted: 0`).
+     - Nếu không khớp (ví dụ yêu cầu `wav` nhưng Muse trả `.mp3` hoặc WAV khác 16-bit PCM), gọi `ffmpeg` transcode nguyên tử qua file `.tmp` (`pcm_s16le` cho `wav`, `libmp3lame` cho `mp3`), xóa file nguồn cũ khác tên và trả `X-Audio-Converted: 1`; cập nhật `tasks.media_filename` trong SQLite theo tên file cuối cùng.
+   - Với `response_format` là `"mp3"` hoặc `"wav"`, trả `FileResponse` binary kèm `Content-Type` tương ứng (`audio/mpeg` hoặc `audio/wav`), `X-Muse-Media-Url: /v1/media/<filename>` và `X-Audio-Converted: 0|1`; với `"url"` hoặc `"json"`, trả JSON metadata kèm đường dẫn đầy đủ.

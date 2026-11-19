@@ -151,7 +151,7 @@ Binary audio/mpeg (.mp3 stream with headers X-Voice-Preview-Cache: HIT|MISS)
   },
   {
     ep: "POST /v1/audio/speech",
-    mode: "Sync Audio (.mp3) & URL",
+    mode: "Sync Audio (.mp3 / .wav) & URL",
     inputDoc: `Headers: Authorization: Bearer <API_KEY>, Content-Type: application/json
 Body:
 {
@@ -160,22 +160,21 @@ Body:
   "voice": "avocado_v2:MAI_01", // or 'Aria', 'alloy', 'echo', etc. Default: Aria
   "instructions": "Speak warmly and naturally", // optional
   "speed": 1.0, // optional (0.25 - 4.0)
-  "response_format": "mp3" // optional: "mp3" (default binary) or "url" / "json"
+  "response_format": "mp3" // optional: "mp3" (default), "wav" (16-bit PCM), or "url" / "json"
 }`,
-    outputDoc: `// response_format="mp3" (default):
-Binary audio/mpeg (.mp3 stream/file)
+    outputDoc: `// response_format="mp3" (default) or "wav":
+Binary audio/mpeg (.mp3) or audio/wav (.wav 16-bit PCM) stream/file
+Headers: X-Muse-Media-Url, X-Audio-Converted ("1" if ffmpeg fallback converted)
 
 // response_format="url" or "json":
 {
   "created": 1795058000,
-  "data": [
-    {
-      "url": "http://.../v1/media/aud_xxx.mp3",
-      "kind": "audio",
-      "voice": "avocado_v2:MAI_01",
-      "bytes": 245120
-    }
-  ]
+  "model": "muse-tts",
+  "voice": "avocado_v2:MAI_01",
+  "voice_name": "Aria",
+  "url": "http://.../v1/media/aud_xxx.mp3",
+  "kind": "audio",
+  "bytes": 245120
 }`,
   },
   {

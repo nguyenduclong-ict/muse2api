@@ -703,7 +703,7 @@ export function PlaygroundPage() {
   const [selectedVoiceId, setSelectedVoiceId] = useState("avocado_v2:MAI_01");
   const [speechModel, setSpeechModel] = useState("muse-tts");
   const [speechSpeed, setSpeechSpeed] = useState("1.0");
-  const [speechFormat, setSpeechFormat] = useState<"mp3" | "url">("mp3");
+  const [speechFormat, setSpeechFormat] = useState<"mp3" | "wav" | "url">("mp3");
   const [speechInstructions, setSpeechInstructions] = useState("");
   const [speechInput, setSpeechInput] = useState(
     "Hello world! [laughs] That is fantastic.",
@@ -901,7 +901,7 @@ export function PlaygroundPage() {
         );
       }
 
-      if (speechFormat === "mp3") {
+      if (speechFormat === "mp3" || speechFormat === "wav") {
         const blob = await res.blob();
         const blobUrl = URL.createObjectURL(blob);
         setSpeechAudioUrl(blobUrl);
@@ -910,7 +910,7 @@ export function PlaygroundPage() {
           statusText: res.statusText,
           latencyMs,
           headers: respHeaders,
-          body: `Binary audio/mpeg (${formatBytes(blob.size)})`,
+          body: `Binary ${speechFormat === "wav" ? "audio/wav" : "audio/mpeg"} (${formatBytes(blob.size)})`,
         });
       } else {
         const data = await res.json();
@@ -1817,6 +1817,7 @@ export function PlaygroundPage() {
                       className="h-9 w-full rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-1.5 text-xs text-zinc-100 focus:border-blue-500 focus:outline-none"
                     >
                       <option value="mp3">mp3 (Binary Stream)</option>
+                      <option value="wav">wav (Binary Stream)</option>
                       <option value="url">url (JSON format)</option>
                     </select>
                   </div>
@@ -1904,14 +1905,17 @@ export function PlaygroundPage() {
                       <span className="text-xs font-semibold text-emerald-400">
                         Audio Ready
                       </span>
-                      <a href={speechAudioUrl} download="speech.mp3">
+                      <a
+                        href={speechAudioUrl}
+                        download={speechFormat === "wav" ? "speech.wav" : "speech.mp3"}
+                      >
                         <Button
                           variant="outline"
                           size="sm"
                           className="h-6 px-2 text-[11px]"
                         >
                           <Download className="h-3 w-3" />
-                          Download MP3
+                          {speechFormat === "wav" ? "Download WAV" : "Download MP3"}
                         </Button>
                       </a>
                     </div>

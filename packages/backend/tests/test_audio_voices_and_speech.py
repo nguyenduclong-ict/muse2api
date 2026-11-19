@@ -1,12 +1,14 @@
 """Unit and Integration tests for Voice catalog, TTS prompt builder, and /v1/audio endpoints."""
 
 import asyncio
+import io
 import json
 import os
 import shutil
 import sys
 import tempfile
 import unittest
+import wave
 from unittest.mock import MagicMock, patch
 
 _BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
@@ -17,6 +19,13 @@ from config import Config
 from db import Database
 from main import app
 from routers.v1_openai import _build_speech_prompt
+from services.audio_format import (
+    AudioConversionError,
+    detect_audio_format,
+    ensure_audio_file_format,
+    is_pcm16_wav,
+    matches_target_format,
+)
 from services.voices import (
     get_voice_language_group,
     is_voice_allowed,
@@ -226,6 +235,21 @@ class TestVoiceCatalog(unittest.TestCase):
         self.assertEqual(len(eng_us_only), expected_eng)
 
 
+def _make_pcm_wav_bytes(
+    sample_width: int = 2,
+    nchannels: int = 1,
+    framerate: int = 24000,
+    nframes: int = 240,
+) -> bytes:
+    buf = io.BytesIO()
+    with wave.open(buf, "wb") as wf:
+        wf.setnchannels(nchannels)
+        wf.setsampwidth(sample_width)
+        wf.setframerate(framerate)
+        wf.writeframes(b"\x00" * (nframes * nchannels * sample_width))
+    return buf.getvalue()
+
+
 class TestSpeechPromptBuilder(unittest.TestCase):
     """Test Muse VM prompt formatting for TTS."""
 
@@ -238,6 +262,7 @@ class TestSpeechPromptBuilder(unittest.TestCase):
         expected = (
             'Generate an MP3 audio speech file using voice "avocado_v2:vdc_31875" (Wry Noodle).\n'
             "Language: en. Speed: 100.\n"
+            "Audio output: normalize to -16 LUFS, true peak max -1.5 dB, do not clip.\n"
             "\n"
             "Do NOT read any bracket tags literally. Convert them to spoken sounds or delivery cues first "
             "(keep sounds lowercase and comma-separated, without exclamation marks, so delivery stays soft and natural):\n"
@@ -258,6 +283,19 @@ class TestSpeechPromptBuilder(unittest.TestCase):
             '"Text User want to speech"'
         )
         self.assertEqual(prompt, expected)
+
+    def test_wav_prompt_format(self):
+        prompt = _build_speech_prompt(
+            "Hello WAV",
+            "avocado_v2:vdc_31875",
+            "Wry Noodle",
+            output_format="wav",
+        )
+        self.assertTrue(
+            prompt.startswith(
+                'Generate a WAV (16-bit PCM) audio speech file using voice "avocado_v2:vdc_31875" (Wry Noodle).'
+            )
+        )
 
     def test_prompt_with_instructions_speed_and_language(self):
         prompt = _build_speech_prompt(
@@ -288,6 +326,87 @@ class TestSpeechPromptBuilder(unittest.TestCase):
         self.assertIn(f'"{text}"', prompt)
 
 
+class TestAudioFormatService(unittest.TestCase):
+    """Unit tests for audio header detection, PCM16 WAV validation, and ffmpeg fallback."""
+
+    def test_detect_audio_format(self):
+        self.assertEqual(detect_audio_format(_make_pcm_wav_bytes()), "wav")
+        self.assertEqual(detect_audio_format(b"ID3\x03\x00\x00\x00\x00\x00\x00"), "mp3")
+        self.assertEqual(detect_audio_format(b"\xff\xfb\x90\x00\x00\x00"), "mp3")
+        self.assertIsNone(detect_audio_format(b"OggS\x00\x02"))
+        self.assertIsNone(detect_audio_format(b""))
+
+    def test_is_pcm16_wav_and_matches_target_format(self):
+        wav16 = _make_pcm_wav_bytes(sample_width=2)
+        wav24 = _make_pcm_wav_bytes(sample_width=3)
+        wav8 = _make_pcm_wav_bytes(sample_width=1)
+        mp3_bytes = b"ID3\x03\x00#FAKE_MP3#"
+
+        self.assertTrue(is_pcm16_wav(wav16))
+        self.assertFalse(is_pcm16_wav(wav24))
+        self.assertFalse(is_pcm16_wav(wav8))
+        self.assertFalse(is_pcm16_wav(mp3_bytes))
+        self.assertFalse(is_pcm16_wav(b"RIFF\x24\x00\x00\x00WAVEcorrupt"))
+
+        self.assertTrue(matches_target_format(wav16, "wav"))
+        self.assertFalse(matches_target_format(wav24, "wav"))
+        self.assertFalse(matches_target_format(mp3_bytes, "wav"))
+        self.assertTrue(matches_target_format(mp3_bytes, "mp3"))
+        self.assertFalse(matches_target_format(wav16, "mp3"))
+
+    def test_ensure_audio_file_format_paths(self):
+        tmp_dir = tempfile.mkdtemp()
+        try:
+            # 1. Native match skips convert_audio_file
+            wav_path = os.path.join(tmp_dir, "native.wav")
+            with open(wav_path, "wb") as f:
+                f.write(_make_pcm_wav_bytes())
+            with patch("services.audio_format.convert_audio_file") as mock_conv:
+                out_path, converted = ensure_audio_file_format(wav_path, "wav")
+            self.assertEqual(out_path, wav_path)
+            self.assertFalse(converted)
+            mock_conv.assert_not_called()
+
+            # 2. Native match with wrong extension renames without converting
+            misnamed_path = os.path.join(tmp_dir, "misnamed.mp3")
+            with open(misnamed_path, "wb") as f:
+                f.write(_make_pcm_wav_bytes())
+            with patch("services.audio_format.convert_audio_file") as mock_conv:
+                out_path, converted = ensure_audio_file_format(misnamed_path, "wav")
+            self.assertEqual(out_path, os.path.join(tmp_dir, "misnamed.wav"))
+            self.assertFalse(converted)
+            self.assertFalse(os.path.exists(misnamed_path))
+            self.assertTrue(os.path.isfile(out_path))
+            mock_conv.assert_not_called()
+
+            # 3. Mismatch invokes convert_audio_file and removes original mismatched file
+            mp3_src = os.path.join(tmp_dir, "mismatch.mp3")
+            with open(mp3_src, "wb") as f:
+                f.write(b"ID3\x03\x00#MOCK_MP3#")
+
+            def fake_convert(src, dst, fmt):
+                with open(dst, "wb") as out_f:
+                    out_f.write(_make_pcm_wav_bytes())
+
+            with patch("services.audio_format.convert_audio_file", side_effect=fake_convert) as mock_conv:
+                out_path, converted = ensure_audio_file_format(mp3_src, "wav")
+            self.assertEqual(out_path, os.path.join(tmp_dir, "mismatch.wav"))
+            self.assertTrue(converted)
+            mock_conv.assert_called_once_with(mp3_src, os.path.join(tmp_dir, "mismatch.wav"), "wav")
+            self.assertFalse(os.path.exists(mp3_src))
+            self.assertTrue(os.path.isfile(out_path))
+
+            # 4. Missing ffmpeg raises AudioConversionError
+            mp3_no_ffmpeg = os.path.join(tmp_dir, "no_ffmpeg.mp3")
+            with open(mp3_no_ffmpeg, "wb") as f:
+                f.write(b"ID3\x03\x00#MOCK_MP3#")
+            with patch("services.audio_format.find_ffmpeg", return_value=None):
+                with self.assertRaises(AudioConversionError):
+                    ensure_audio_file_format(mp3_no_ffmpeg, "wav")
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
 class TestAudioEndpoints(unittest.IsolatedAsyncioTestCase):
     """Integration tests for FastAPI endpoints: /v1/models, /v1/audio/voices, /v1/audio/speech."""
 
@@ -309,6 +428,7 @@ class TestAudioEndpoints(unittest.IsolatedAsyncioTestCase):
 
     @classmethod
     def tearDownClass(cls):
+        cls.db.close()
         shutil.rmtree(cls.temp_dir, ignore_errors=True)
 
     def setUp(self):
@@ -515,19 +635,22 @@ class TestAudioEndpoints(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status, 400)
         self.assertIn("input must be non-empty", body.decode("utf-8"))
 
-        # Unsupported format -> 400
-        req_body = json.dumps({"input": "Hello", "response_format": "wav"}).encode(
-            "utf-8"
-        )
-        status, _, body = await call_asgi(
-            app,
-            "POST",
-            "/v1/audio/speech",
-            headers=self.auth_headers + [(b"content-type", b"application/json")],
-            body=req_body,
-        )
-        self.assertEqual(status, 400)
-        self.assertIn("Unsupported response_format", body.decode("utf-8"))
+        # Unsupported formats -> 400
+        for bad_fmt in ("opus", "flac"):
+            req_body = json.dumps({"input": "Hello", "response_format": bad_fmt}).encode(
+                "utf-8"
+            )
+            status, _, body = await call_asgi(
+                app,
+                "POST",
+                "/v1/audio/speech",
+                headers=self.auth_headers + [(b"content-type", b"application/json")],
+                body=req_body,
+            )
+            self.assertEqual(status, 400)
+            body_txt = body.decode("utf-8")
+            self.assertIn("Unsupported response_format", body_txt)
+            self.assertIn("Only 'mp3', 'wav', 'url', and 'json'", body_txt)
 
         # Unknown voice -> 400
         req_body = json.dumps({"input": "Hello", "voice": "unknown_voice_xyz"}).encode(
@@ -724,6 +847,220 @@ class TestAudioEndpoints(unittest.IsolatedAsyncioTestCase):
         # Clean up fake file
         if os.path.exists(fake_path):
             os.remove(fake_path)
+
+    async def test_speech_wav_native_and_fallback_conversion(self):
+        media_dir = self.cfg.media_dir
+        os.makedirs(media_dir, exist_ok=True)
+        wav_bytes = _make_pcm_wav_bytes()
+
+        # Case A: Muse natively returns valid 16-bit PCM WAV
+        native_name = "aud_native_wav.wav"
+        native_path = os.path.join(media_dir, native_name)
+        with open(native_path, "wb") as f:
+            f.write(wav_bytes)
+
+        try:
+            with patch.object(
+                self.pool, "ensure_candidate", return_value=[{"id": "acc_test"}]
+            ), patch.object(
+                self.pool,
+                "generate_media",
+                return_value={
+                    "account_id": "acc_test",
+                    "session_id": "sess_wav_1",
+                    "filename": native_name,
+                    "mime_type": "audio/wav",
+                    "size_bytes": len(wav_bytes),
+                },
+            ) as mock_gen:
+                status, headers, body = await call_asgi(
+                    app,
+                    "POST",
+                    "/v1/audio/speech",
+                    headers=self.auth_headers + [(b"content-type", b"application/json")],
+                    body=json.dumps(
+                        {
+                            "model": "muse-tts",
+                            "input": "Hello native WAV",
+                            "voice": "alloy",
+                            "response_format": "wav",
+                        }
+                    ).encode("utf-8"),
+                )
+            self.assertEqual(status, 200)
+            self.assertIn("audio/wav", headers.get("content-type", ""))
+            self.assertEqual(headers.get("x-audio-converted"), "0")
+            self.assertEqual(body, wav_bytes)
+            self.assertIn("WAV (16-bit PCM)", mock_gen.call_args.args[0])
+            tasks = self.db.list_tasks(task_type="audio", limit=1)
+            self.assertEqual(tasks[0]["media_filename"], native_name)
+        finally:
+            if os.path.exists(native_path):
+                os.remove(native_path)
+
+        # Case B: Muse ignores prompt and returns MP3 bytes -> fallback convert to WAV
+        mp3_name = "aud_mismatch.mp3"
+        mp3_path = os.path.join(media_dir, mp3_name)
+        converted_wav_path = os.path.join(media_dir, "aud_mismatch.wav")
+        with open(mp3_path, "wb") as f:
+            f.write(b"ID3\x03\x00#MOCK_MP3#")
+
+        def fake_to_wav(src, dst, fmt):
+            with open(dst, "wb") as out_f:
+                out_f.write(wav_bytes)
+
+        try:
+            with patch.object(
+                self.pool, "ensure_candidate", return_value=[{"id": "acc_test"}]
+            ), patch.object(
+                self.pool,
+                "generate_media",
+                return_value={
+                    "account_id": "acc_test",
+                    "session_id": "sess_wav_2",
+                    "filename": mp3_name,
+                    "mime_type": "audio/mpeg",
+                    "size_bytes": 16,
+                },
+            ), patch(
+                "services.audio_format.convert_audio_file", side_effect=fake_to_wav
+            ) as mock_conv:
+                status, headers, body = await call_asgi(
+                    app,
+                    "POST",
+                    "/v1/audio/speech",
+                    headers=self.auth_headers + [(b"content-type", b"application/json")],
+                    body=json.dumps(
+                        {
+                            "model": "muse-tts",
+                            "input": "Convert MP3 to WAV",
+                            "voice": "alloy",
+                            "response_format": "wav",
+                        }
+                    ).encode("utf-8"),
+                )
+            self.assertEqual(status, 200)
+            self.assertIn("audio/wav", headers.get("content-type", ""))
+            self.assertEqual(headers.get("x-audio-converted"), "1")
+            self.assertEqual(body, wav_bytes)
+            mock_conv.assert_called_once()
+            self.assertEqual(mock_conv.call_args.args[2], "wav")
+            self.assertFalse(os.path.exists(mp3_path))
+            self.assertTrue(os.path.isfile(converted_wav_path))
+            tasks = self.db.list_tasks(task_type="audio", limit=1)
+            self.assertEqual(tasks[0]["media_filename"], "aud_mismatch.wav")
+        finally:
+            for p in (mp3_path, converted_wav_path):
+                if os.path.exists(p):
+                    os.remove(p)
+
+    async def test_speech_mp3_fallback_conversion_and_error(self):
+        media_dir = self.cfg.media_dir
+        os.makedirs(media_dir, exist_ok=True)
+        wav_bytes = _make_pcm_wav_bytes()
+        mp3_bytes = b"ID3\x03\x00#CONVERTED_MP3#"
+
+        # Case A: response_format="mp3", Muse returns WAV -> fallback convert to MP3
+        wav_name = "aud_wav_for_mp3.wav"
+        wav_path = os.path.join(media_dir, wav_name)
+        converted_mp3_path = os.path.join(media_dir, "aud_wav_for_mp3.mp3")
+        with open(wav_path, "wb") as f:
+            f.write(wav_bytes)
+
+        def fake_to_mp3(src, dst, fmt):
+            with open(dst, "wb") as out_f:
+                out_f.write(mp3_bytes)
+
+        try:
+            with patch.object(
+                self.pool, "ensure_candidate", return_value=[{"id": "acc_test"}]
+            ), patch.object(
+                self.pool,
+                "generate_media",
+                return_value={
+                    "account_id": "acc_test",
+                    "session_id": "sess_mp3_1",
+                    "filename": wav_name,
+                    "mime_type": "audio/wav",
+                    "size_bytes": len(wav_bytes),
+                },
+            ), patch(
+                "services.audio_format.convert_audio_file", side_effect=fake_to_mp3
+            ) as mock_conv:
+                status, headers, body = await call_asgi(
+                    app,
+                    "POST",
+                    "/v1/audio/speech",
+                    headers=self.auth_headers + [(b"content-type", b"application/json")],
+                    body=json.dumps(
+                        {
+                            "model": "muse-tts",
+                            "input": "Convert WAV to MP3",
+                            "voice": "alloy",
+                            "response_format": "mp3",
+                        }
+                    ).encode("utf-8"),
+                )
+            self.assertEqual(status, 200)
+            self.assertIn("audio/mpeg", headers.get("content-type", ""))
+            self.assertEqual(headers.get("x-audio-converted"), "1")
+            self.assertEqual(body, mp3_bytes)
+            mock_conv.assert_called_once()
+            self.assertEqual(mock_conv.call_args.args[2], "mp3")
+            self.assertFalse(os.path.exists(wav_path))
+            self.assertTrue(os.path.isfile(converted_mp3_path))
+            tasks = self.db.list_tasks(task_type="audio", limit=1)
+            self.assertEqual(tasks[0]["media_filename"], "aud_wav_for_mp3.mp3")
+        finally:
+            for p in (wav_path, converted_mp3_path):
+                if os.path.exists(p):
+                    os.remove(p)
+
+        # Case B: Conversion failure raises AudioConversionError -> 502 and failed task
+        err_name = "aud_conv_fail.mp3"
+        err_path = os.path.join(media_dir, err_name)
+        with open(err_path, "wb") as f:
+            f.write(b"ID3\x03\x00#BAD_MP3#")
+
+        try:
+            with patch.object(
+                self.pool, "ensure_candidate", return_value=[{"id": "acc_test"}]
+            ), patch.object(
+                self.pool,
+                "generate_media",
+                return_value={
+                    "account_id": "acc_test",
+                    "session_id": "sess_fail_1",
+                    "filename": err_name,
+                    "mime_type": "audio/mpeg",
+                    "size_bytes": 14,
+                },
+            ), patch(
+                "services.audio_format.convert_audio_file",
+                side_effect=AudioConversionError("ffmpeg missing"),
+            ):
+                status, _, body = await call_asgi(
+                    app,
+                    "POST",
+                    "/v1/audio/speech",
+                    headers=self.auth_headers + [(b"content-type", b"application/json")],
+                    body=json.dumps(
+                        {
+                            "model": "muse-tts",
+                            "input": "Should fail convert",
+                            "voice": "alloy",
+                            "response_format": "wav",
+                        }
+                    ).encode("utf-8"),
+                )
+            self.assertEqual(status, 502)
+            self.assertIn("ffmpeg missing", body.decode("utf-8"))
+            tasks = self.db.list_tasks(task_type="audio", limit=1)
+            self.assertEqual(tasks[0]["status"], "failed")
+            self.assertIn("ffmpeg missing", tasks[0]["error_message"])
+        finally:
+            if os.path.exists(err_path):
+                os.remove(err_path)
 
     def test_fetch_media_from_history_handles_string_fields(self):
         pool = WSSPool(self.cfg, self.db)

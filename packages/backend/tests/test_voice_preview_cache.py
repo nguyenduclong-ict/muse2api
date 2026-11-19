@@ -78,6 +78,7 @@ class TestVoicePreviewServiceUnit(unittest.TestCase):
         self.svc = VoicePreviewService(self.cfg, self.db, self.pool)
 
     def tearDown(self):
+        self.db.close()
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     def test_safe_preview_filename(self):
@@ -181,6 +182,7 @@ class TestVoicePreviewEndpoints(unittest.IsolatedAsyncioTestCase):
         app.state.voice_preview = self.voice_preview
 
     async def asyncTearDown(self):
+        self.db.close()
         shutil.rmtree(self.temp_dir, ignore_errors=True)
 
     async def test_get_voices_includes_preview_metadata(self):

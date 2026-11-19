@@ -1,16 +1,85 @@
-"""SQLite (WAL mode) persistence layer for muse2apiv2."""
+"""SQLite persistence layer for muse2apiv2."""
 from __future__ import annotations
 
 import json
+import logging
 import os
 import re
 import secrets
+import shutil
 import sqlite3
 import threading
 import time
-from typing import Any
+from typing import Any, Callable, TypeVar
 
 from config import Config, DEFAULT_SYSTEM_PROMPT
+
+logger = logging.getLogger(__name__)
+_T = TypeVar("_T")
+
+_VALID_JOURNAL_MODES = frozenset({"DELETE", "TRUNCATE", "PERSIST", "WAL", "MEMORY", "OFF"})
+_NON_WAL_FS_TYPES = frozenset({
+    "9p",
+    "cifs",
+    "smb",
+    "smb3",
+    "smbfs",
+    "nfs",
+    "nfs4",
+    "vboxsf",
+    "fuse",
+    "fuse.sshfs",
+    "drvfs",
+})
+_TRANSIENT_SQLITE_ERRORS = (
+    "unable to open database file",
+    "disk i/o error",
+    "database is locked",
+    "database is busy",
+)
+
+
+def _detect_mount_fstype(path: str, mounts_file: str = "/proc/mounts") -> str | None:
+    """Detect filesystem type for path from /proc/mounts using longest mount prefix."""
+    if not mounts_file or not os.path.isfile(mounts_file):
+        return None
+    target = os.path.realpath(os.path.abspath(path))
+    best_len = -1
+    best_fstype: str | None = None
+    try:
+        with open(mounts_file, "r", encoding="utf-8", errors="replace") as f:
+            for line in f:
+                parts = line.split()
+                if len(parts) < 3:
+                    continue
+                mp = parts[1].replace("\\040", " ").replace("\\011", "\t")
+                fstype = parts[2].strip().lower()
+                mp_norm = mp.rstrip("/") or "/"
+                matched = target == mp or mp_norm == "/" or target.startswith(mp_norm + "/")
+                if matched and len(mp) > best_len:
+                    best_len = len(mp)
+                    best_fstype = fstype
+    except OSError:
+        return None
+    return best_fstype
+
+
+def resolve_journal_mode(
+    db_path: str,
+    env_override: str | None = None,
+    mounts_file: str = "/proc/mounts",
+) -> str:
+    """Choose SQLite journal_mode based on explicit override or filesystem type."""
+    raw_env = env_override if env_override is not None else os.environ.get("MUSE2API_SQLITE_JOURNAL_MODE", "")
+    override = raw_env.strip().upper()
+    if override in _VALID_JOURNAL_MODES:
+        return override
+
+    db_dir = os.path.dirname(os.path.abspath(db_path)) or "."
+    fstype = _detect_mount_fstype(db_dir, mounts_file=mounts_file)
+    if fstype in _NON_WAL_FS_TYPES:
+        return "TRUNCATE"
+    return "WAL"
 
 MAX_INPUT_REQUEST_BYTES = 32 * 1024
 _TRUNCATED_SUFFIX = "... [truncated]"
@@ -144,241 +213,330 @@ def parse_supported_models(raw: str | list[str] | None) -> list[str]:
     return ordered or list(SUPPORTED_MODEL_TYPES)
 
 
+def _migrate_legacy_db_if_needed(cfg: Config) -> bool:
+    """One-time copy of data/muse2apiv2.db to custom db_path when target does not exist yet."""
+    dst = os.path.abspath(cfg.db_path)
+    legacy = os.path.abspath(os.path.join(cfg.data_dir, "muse2apiv2.db"))
+    os.makedirs(os.path.dirname(dst), exist_ok=True)
+    if dst == legacy or os.path.exists(dst) or not os.path.isfile(legacy):
+        return False
+
+    tmp_dst = f"{dst}.migrating"
+    try:
+        shutil.copy2(legacy, tmp_dst)
+        os.replace(tmp_dst, dst)
+    except Exception:
+        try:
+            if os.path.exists(tmp_dst):
+                os.remove(tmp_dst)
+        except OSError:
+            pass
+        raise
+
+    legacy_wal = f"{legacy}-wal"
+    if os.path.isfile(legacy_wal) and os.path.getsize(legacy_wal) > 0:
+        shutil.copy2(legacy_wal, f"{dst}-wal")
+
+    logger.info("Migrated legacy SQLite database from %s to %s", legacy, dst)
+    return True
+
+
 class Database:
-    """Thread-safe SQLite wrapper using WAL mode."""
+    """Thread-safe SQLite wrapper using a persistent connection and adaptive journal mode."""
 
     def __init__(self, cfg: Config):
         self.cfg = cfg
         os.makedirs(cfg.data_dir, exist_ok=True)
         os.makedirs(cfg.media_dir, exist_ok=True)
-        self._lock = threading.Lock()
+        _migrate_legacy_db_if_needed(cfg)
+        self._lock = threading.RLock()
+        self._conn: sqlite3.Connection | None = None
+        self.journal_mode: str = resolve_journal_mode(cfg.db_path)
         self.init_schema()
 
-    def _connect(self) -> sqlite3.Connection:
+    def _open_connection(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.cfg.db_path, timeout=30.0, check_same_thread=False)
-        conn.row_factory = sqlite3.Row
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("PRAGMA foreign_keys=ON;")
-        return conn
+        try:
+            conn.row_factory = sqlite3.Row
+            conn.execute("PRAGMA busy_timeout=30000;")
+            conn.execute("PRAGMA foreign_keys=ON;")
+            jm_row = conn.execute(f"PRAGMA journal_mode={self.journal_mode};").fetchone()
+            actual_jm = str(jm_row[0]).upper() if jm_row else ""
+            if actual_jm and actual_jm != self.journal_mode:
+                logger.warning(
+                    "SQLite journal_mode requested=%s, actual=%s (path=%s)",
+                    self.journal_mode,
+                    actual_jm,
+                    self.cfg.db_path,
+                )
+            conn.execute("PRAGMA synchronous=NORMAL;")
+            return conn
+        except Exception:
+            try:
+                conn.close()
+            except Exception:
+                pass
+            raise
+
+    def _get_conn(self) -> sqlite3.Connection:
+        if self._conn is None:
+            self._conn = self._open_connection()
+        return self._conn
+
+    def _reset_conn(self) -> None:
+        conn = self._conn
+        self._conn = None
+        if conn is not None:
+            try:
+                conn.rollback()
+            except Exception:
+                pass
+            try:
+                conn.close()
+            except Exception:
+                pass
+
+    def close(self) -> None:
+        """Close the persistent SQLite connection cleanly."""
+        with self._lock:
+            self._reset_conn()
+
+    def __del__(self) -> None:
+        try:
+            self.close()
+        except Exception:
+            pass
+
+    def _run(self, fn: Callable[[sqlite3.Connection], _T]) -> _T:
+        with self._lock:
+            for attempt in range(2):
+                conn = self._get_conn()
+                try:
+                    return fn(conn)
+                except sqlite3.OperationalError as exc:
+                    self._reset_conn()
+                    msg = str(exc).lower()
+                    if attempt == 0 and any(tok in msg for tok in _TRANSIENT_SQLITE_ERRORS):
+                        logger.warning(
+                            "Transient SQLite error (%s); resetting connection and retrying once",
+                            exc,
+                        )
+                        time.sleep(0.15)
+                        continue
+                    raise
+                except Exception:
+                    try:
+                        conn.rollback()
+                    except Exception:
+                        pass
+                    raise
+            raise RuntimeError("Unreachable SQLite retry termination")
 
     def init_schema(self) -> None:
-        with self._lock:
-            conn = self._connect()
-            try:
-                conn.executescript(
-                    """
-                    CREATE TABLE IF NOT EXISTS proxies (
-                        id TEXT PRIMARY KEY,
-                        proxy_url TEXT NOT NULL UNIQUE,
-                        scheme TEXT NOT NULL DEFAULT 'http',
-                        status TEXT NOT NULL DEFAULT 'unknown',
-                        ip TEXT DEFAULT '',
-                        country TEXT DEFAULT '',
-                        city TEXT DEFAULT '',
-                        org TEXT DEFAULT '',
-                        latency_ms INTEGER DEFAULT 0,
-                        last_checked_at REAL DEFAULT 0,
-                        last_error TEXT DEFAULT '',
-                        created_at REAL NOT NULL
-                    );
+        def _op(conn: sqlite3.Connection) -> None:
+            conn.executescript(
+                """
+                CREATE TABLE IF NOT EXISTS proxies (
+                    id TEXT PRIMARY KEY,
+                    proxy_url TEXT NOT NULL UNIQUE,
+                    scheme TEXT NOT NULL DEFAULT 'http',
+                    status TEXT NOT NULL DEFAULT 'unknown',
+                    ip TEXT DEFAULT '',
+                    country TEXT DEFAULT '',
+                    city TEXT DEFAULT '',
+                    org TEXT DEFAULT '',
+                    latency_ms INTEGER DEFAULT 0,
+                    last_checked_at REAL DEFAULT 0,
+                    last_error TEXT DEFAULT '',
+                    created_at REAL NOT NULL
+                );
 
-                    CREATE TABLE IF NOT EXISTS accounts (
-                        id TEXT PRIMARY KEY,
-                        label TEXT NOT NULL,
-                        cookies_json TEXT NOT NULL,
-                        proxy_id TEXT DEFAULT NULL REFERENCES proxies(id) ON DELETE SET NULL,
-                        proxy_url TEXT DEFAULT '',
-                        enabled INTEGER NOT NULL DEFAULT 1,
-                        supported_models_json TEXT NOT NULL DEFAULT '["chat","image","video","speech"]',
-                        status TEXT NOT NULL DEFAULT 'unknown',
-                        quota_json TEXT DEFAULT '{}',
-                        last_used_at REAL DEFAULT 0,
-                        last_keepalive_at REAL DEFAULT 0,
-                        last_error TEXT DEFAULT '',
-                        created_at REAL NOT NULL,
-                        updated_at REAL NOT NULL
-                    );
+                CREATE TABLE IF NOT EXISTS accounts (
+                    id TEXT PRIMARY KEY,
+                    label TEXT NOT NULL,
+                    cookies_json TEXT NOT NULL,
+                    proxy_id TEXT DEFAULT NULL REFERENCES proxies(id) ON DELETE SET NULL,
+                    proxy_url TEXT DEFAULT '',
+                    enabled INTEGER NOT NULL DEFAULT 1,
+                    supported_models_json TEXT NOT NULL DEFAULT '["chat","image","video","speech"]',
+                    status TEXT NOT NULL DEFAULT 'unknown',
+                    quota_json TEXT DEFAULT '{}',
+                    last_used_at REAL DEFAULT 0,
+                    last_keepalive_at REAL DEFAULT 0,
+                    last_error TEXT DEFAULT '',
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL
+                );
 
-                    CREATE TABLE IF NOT EXISTS keepalive_logs (
-                        id INTEGER PRIMARY KEY AUTOINCREMENT,
-                        account_id TEXT NOT NULL,
-                        status TEXT NOT NULL,
-                        vm_state TEXT DEFAULT '',
-                        message TEXT DEFAULT '',
-                        created_at REAL NOT NULL,
-                        FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
-                    );
+                CREATE TABLE IF NOT EXISTS keepalive_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    account_id TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    vm_state TEXT DEFAULT '',
+                    message TEXT DEFAULT '',
+                    created_at REAL NOT NULL,
+                    FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+                );
 
-                    CREATE TABLE IF NOT EXISTS tasks (
-                        id TEXT PRIMARY KEY,
-                        type TEXT NOT NULL,
-                        status TEXT NOT NULL,
-                        account_id TEXT DEFAULT '',
-                        model TEXT DEFAULT '',
-                        prompt_preview TEXT DEFAULT '',
-                        input_request_json TEXT DEFAULT '',
-                        session_id TEXT DEFAULT '',
-                        media_filename TEXT DEFAULT '',
-                        error_message TEXT DEFAULT '',
-                        latency_ms INTEGER DEFAULT 0,
-                        created_at REAL NOT NULL,
-                        updated_at REAL NOT NULL
-                    );
+                CREATE TABLE IF NOT EXISTS tasks (
+                    id TEXT PRIMARY KEY,
+                    type TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    account_id TEXT DEFAULT '',
+                    model TEXT DEFAULT '',
+                    prompt_preview TEXT DEFAULT '',
+                    input_request_json TEXT DEFAULT '',
+                    session_id TEXT DEFAULT '',
+                    media_filename TEXT DEFAULT '',
+                    error_message TEXT DEFAULT '',
+                    latency_ms INTEGER DEFAULT 0,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL
+                );
 
-                    CREATE TABLE IF NOT EXISTS api_keys (
-                        id INTEGER PRIMARY KEY CHECK (id = 1),
-                        raw_key TEXT NOT NULL,
-                        created_at REAL NOT NULL,
-                        rotated_at REAL NOT NULL
-                    );
+                CREATE TABLE IF NOT EXISTS api_keys (
+                    id INTEGER PRIMARY KEY CHECK (id = 1),
+                    raw_key TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    rotated_at REAL NOT NULL
+                );
 
-                    CREATE TABLE IF NOT EXISTS settings (
-                        key TEXT PRIMARY KEY,
-                        value_json TEXT NOT NULL,
-                        updated_at REAL NOT NULL
-                    );
-                    """
+                CREATE TABLE IF NOT EXISTS settings (
+                    key TEXT PRIMARY KEY,
+                    value_json TEXT NOT NULL,
+                    updated_at REAL NOT NULL
+                );
+                """
+            )
+            # Ensure proxy_id and supported_models_json exist on pre-existing DBs
+            cols = {r["name"] for r in conn.execute("PRAGMA table_info(accounts)").fetchall()}
+            if "proxy_id" not in cols:
+                conn.execute("ALTER TABLE accounts ADD COLUMN proxy_id TEXT DEFAULT NULL REFERENCES proxies(id) ON DELETE SET NULL")
+            if "supported_models_json" not in cols:
+                conn.execute(
+                    "ALTER TABLE accounts ADD COLUMN supported_models_json TEXT NOT NULL DEFAULT '[\"chat\",\"image\",\"video\",\"speech\"]'"
                 )
-                # Ensure proxy_id and supported_models_json exist on pre-existing DBs
-                cols = {r["name"] for r in conn.execute("PRAGMA table_info(accounts)").fetchall()}
-                if "proxy_id" not in cols:
-                    conn.execute("ALTER TABLE accounts ADD COLUMN proxy_id TEXT DEFAULT NULL REFERENCES proxies(id) ON DELETE SET NULL")
-                if "supported_models_json" not in cols:
-                    conn.execute(
-                        "ALTER TABLE accounts ADD COLUMN supported_models_json TEXT NOT NULL DEFAULT '[\"chat\",\"image\",\"video\",\"speech\"]'"
-                    )
-                task_cols = {r["name"] for r in conn.execute("PRAGMA table_info(tasks)").fetchall()}
-                if "input_request_json" not in task_cols:
-                    conn.execute("ALTER TABLE tasks ADD COLUMN input_request_json TEXT DEFAULT ''")
-                now = time.time()
-                row = conn.execute("SELECT raw_key FROM api_keys WHERE id = 1").fetchone()
-                if not row:
-                    initial_key = self.cfg.initial_api_key or f"m2a_{secrets.token_urlsafe(24)}"
-                    conn.execute(
-                        "INSERT INTO api_keys (id, raw_key, created_at, rotated_at) VALUES (1, ?, ?, ?)",
-                        (initial_key, now, now),
-                    )
+            task_cols = {r["name"] for r in conn.execute("PRAGMA table_info(tasks)").fetchall()}
+            if "input_request_json" not in task_cols:
+                conn.execute("ALTER TABLE tasks ADD COLUMN input_request_json TEXT DEFAULT ''")
+            now = time.time()
+            row = conn.execute("SELECT raw_key FROM api_keys WHERE id = 1").fetchone()
+            if not row:
+                initial_key = self.cfg.initial_api_key or f"m2a_{secrets.token_urlsafe(24)}"
+                conn.execute(
+                    "INSERT INTO api_keys (id, raw_key, created_at, rotated_at) VALUES (1, ?, ?, ?)",
+                    (initial_key, now, now),
+                )
 
-                defaults = {
-                    "system_prompt": {
-                        "enabled": self.cfg.system_prompt_enabled,
-                        "prompt": self.cfg.system_prompt or DEFAULT_SYSTEM_PROMPT,
-                    },
-                    "media_cleanup": {
-                        "enabled": self.cfg.media_cleanup_enabled,
-                        "retention_days": self.cfg.media_retention_days,
-                        "max_gb": self.cfg.media_max_gb,
-                        "interval_minutes": self.cfg.cleanup_interval_minutes,
-                    },
-                    "voice_languages": {
-                        "enabled": False,
-                        "languages": [],
-                    },
-                }
-                for k, val in defaults.items():
-                    exists = conn.execute("SELECT 1 FROM settings WHERE key = ?", (k,)).fetchone()
-                    if not exists:
-                        conn.execute(
-                            "INSERT INTO settings (key, value_json, updated_at) VALUES (?, ?, ?)",
-                            (k, json.dumps(val), now),
-                        )
-                conn.commit()
-            finally:
-                conn.close()
+            defaults = {
+                "system_prompt": {
+                    "enabled": self.cfg.system_prompt_enabled,
+                    "prompt": self.cfg.system_prompt or DEFAULT_SYSTEM_PROMPT,
+                },
+                "media_cleanup": {
+                    "enabled": self.cfg.media_cleanup_enabled,
+                    "retention_days": self.cfg.media_retention_days,
+                    "max_gb": self.cfg.media_max_gb,
+                    "interval_minutes": self.cfg.cleanup_interval_minutes,
+                },
+                "voice_languages": {
+                    "enabled": False,
+                    "languages": [],
+                },
+            }
+            for k, val in defaults.items():
+                exists = conn.execute("SELECT 1 FROM settings WHERE key = ?", (k,)).fetchone()
+                if not exists:
+                    conn.execute(
+                        "INSERT INTO settings (key, value_json, updated_at) VALUES (?, ?, ?)",
+                        (k, json.dumps(val), now),
+                    )
+            conn.commit()
+
+        self._run(_op)
 
     # --- API Key ---
     def get_api_key(self) -> dict[str, Any]:
-        with self._lock:
-            conn = self._connect()
-            try:
-                row = conn.execute("SELECT raw_key, created_at, rotated_at FROM api_keys WHERE id = 1").fetchone()
-                return dict(row) if row else {"raw_key": "", "created_at": 0, "rotated_at": 0}
-            finally:
-                conn.close()
+        def _op(conn: sqlite3.Connection) -> dict[str, Any]:
+            row = conn.execute("SELECT raw_key, created_at, rotated_at FROM api_keys WHERE id = 1").fetchone()
+            return dict(row) if row else {"raw_key": "", "created_at": 0, "rotated_at": 0}
+
+        return self._run(_op)
 
     def rotate_api_key(self) -> dict[str, Any]:
         new_key = f"m2a_{secrets.token_urlsafe(24)}"
         now = time.time()
-        with self._lock:
-            conn = self._connect()
-            try:
-                conn.execute("UPDATE api_keys SET raw_key = ?, rotated_at = ? WHERE id = 1", (new_key, now))
-                conn.commit()
-                row = conn.execute("SELECT raw_key, created_at, rotated_at FROM api_keys WHERE id = 1").fetchone()
-                return dict(row)
-            finally:
-                conn.close()
+
+        def _op(conn: sqlite3.Connection) -> dict[str, Any]:
+            conn.execute("UPDATE api_keys SET raw_key = ?, rotated_at = ? WHERE id = 1", (new_key, now))
+            conn.commit()
+            row = conn.execute("SELECT raw_key, created_at, rotated_at FROM api_keys WHERE id = 1").fetchone()
+            return dict(row)
+
+        return self._run(_op)
 
     # --- Settings ---
     def get_settings(self) -> dict[str, Any]:
-        with self._lock:
-            conn = self._connect()
-            try:
-                rows = conn.execute("SELECT key, value_json FROM settings").fetchall()
-                data = {r["key"]: json.loads(r["value_json"]) for r in rows}
-                if "voice_languages" not in data:
-                    data["voice_languages"] = {"enabled": False, "languages": []}
-                return data
-            finally:
-                conn.close()
+        def _op(conn: sqlite3.Connection) -> dict[str, Any]:
+            rows = conn.execute("SELECT key, value_json FROM settings").fetchall()
+            data = {r["key"]: json.loads(r["value_json"]) for r in rows}
+            if "voice_languages" not in data:
+                data["voice_languages"] = {"enabled": False, "languages": []}
+            return data
+
+        return self._run(_op)
 
     def update_setting(self, key: str, value: dict[str, Any]) -> None:
         now = time.time()
-        with self._lock:
-            conn = self._connect()
-            try:
-                conn.execute(
-                    "INSERT INTO settings (key, value_json, updated_at) VALUES (?, ?, ?) "
-                    "ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at",
-                    (key, json.dumps(value), now),
-                )
-                conn.commit()
-            finally:
-                conn.close()
+
+        def _op(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                "INSERT INTO settings (key, value_json, updated_at) VALUES (?, ?, ?) "
+                "ON CONFLICT(key) DO UPDATE SET value_json = excluded.value_json, updated_at = excluded.updated_at",
+                (key, json.dumps(value), now),
+            )
+            conn.commit()
+
+        self._run(_op)
 
     # --- Proxies ---
     def list_proxies(self) -> list[dict[str, Any]]:
-        with self._lock:
-            conn = self._connect()
-            try:
-                rows = conn.execute(
-                    """
-                    SELECT p.*, COUNT(a.id) as account_count
-                    FROM proxies p
-                    LEFT JOIN accounts a ON a.proxy_id = p.id
-                    GROUP BY p.id
-                    ORDER BY p.created_at DESC
-                    """
-                ).fetchall()
-                return [dict(r) for r in rows]
-            finally:
-                conn.close()
+        def _op(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+            rows = conn.execute(
+                """
+                SELECT p.*, COUNT(a.id) as account_count
+                FROM proxies p
+                LEFT JOIN accounts a ON a.proxy_id = p.id
+                GROUP BY p.id
+                ORDER BY p.created_at DESC
+                """
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+        return self._run(_op)
 
     def get_proxy(self, proxy_id: str) -> dict[str, Any] | None:
-        with self._lock:
-            conn = self._connect()
-            try:
-                row = conn.execute("SELECT * FROM proxies WHERE id = ?", (proxy_id,)).fetchone()
-                return dict(row) if row else None
-            finally:
-                conn.close()
+        def _op(conn: sqlite3.Connection) -> dict[str, Any] | None:
+            row = conn.execute("SELECT * FROM proxies WHERE id = ?", (proxy_id,)).fetchone()
+            return dict(row) if row else None
+
+        return self._run(_op)
 
     def create_proxy(self, proxy_id: str, proxy_url: str, scheme: str) -> dict[str, Any] | None:
         now = time.time()
-        with self._lock:
-            conn = self._connect()
-            try:
-                exists = conn.execute("SELECT 1 FROM proxies WHERE proxy_url = ?", (proxy_url,)).fetchone()
-                if exists:
-                    return None
-                conn.execute(
-                    "INSERT INTO proxies (id, proxy_url, scheme, created_at) VALUES (?, ?, ?, ?)",
-                    (proxy_id, proxy_url, scheme, now),
-                )
-                conn.commit()
-                return dict(conn.execute("SELECT * FROM proxies WHERE id = ?", (proxy_id,)).fetchone())
-            finally:
-                conn.close()
+
+        def _op(conn: sqlite3.Connection) -> dict[str, Any] | None:
+            exists = conn.execute("SELECT 1 FROM proxies WHERE proxy_url = ?", (proxy_url,)).fetchone()
+            if exists:
+                return None
+            conn.execute(
+                "INSERT INTO proxies (id, proxy_url, scheme, created_at) VALUES (?, ?, ?, ?)",
+                (proxy_id, proxy_url, scheme, now),
+            )
+            conn.commit()
+            return dict(conn.execute("SELECT * FROM proxies WHERE id = ?", (proxy_id,)).fetchone())
+
+        return self._run(_op)
 
     def update_proxy(self, proxy_id: str, **fields: Any) -> dict[str, Any] | None:
         allowed = {"status", "ip", "country", "city", "org", "latency_ms", "last_checked_at", "last_error"}
@@ -387,101 +545,93 @@ class Database:
             return self.get_proxy(proxy_id)
         cols = ", ".join(f"{k} = ?" for k in updates)
         vals = list(updates.values()) + [proxy_id]
-        with self._lock:
-            conn = self._connect()
-            try:
-                conn.execute(f"UPDATE proxies SET {cols} WHERE id = ?", vals)
-                conn.commit()
-                row = conn.execute("SELECT * FROM proxies WHERE id = ?", (proxy_id,)).fetchone()
-                return dict(row) if row else None
-            finally:
-                conn.close()
+
+        def _op(conn: sqlite3.Connection) -> dict[str, Any] | None:
+            conn.execute(f"UPDATE proxies SET {cols} WHERE id = ?", vals)
+            conn.commit()
+            row = conn.execute("SELECT * FROM proxies WHERE id = ?", (proxy_id,)).fetchone()
+            return dict(row) if row else None
+
+        return self._run(_op)
 
     def delete_proxy(self, proxy_id: str) -> tuple[bool, list[str]]:
-        with self._lock:
-            conn = self._connect()
-            try:
-                affected = [
-                    r["id"] for r in conn.execute("SELECT id FROM accounts WHERE proxy_id = ?", (proxy_id,)).fetchall()
-                ]
-                conn.execute("UPDATE accounts SET proxy_id = NULL WHERE proxy_id = ?", (proxy_id,))
-                cur = conn.execute("DELETE FROM proxies WHERE id = ?", (proxy_id,))
-                conn.commit()
-                return cur.rowcount > 0, affected
-            finally:
-                conn.close()
+        def _op(conn: sqlite3.Connection) -> tuple[bool, list[str]]:
+            affected = [
+                r["id"] for r in conn.execute("SELECT id FROM accounts WHERE proxy_id = ?", (proxy_id,)).fetchall()
+            ]
+            conn.execute("UPDATE accounts SET proxy_id = NULL WHERE proxy_id = ?", (proxy_id,))
+            cur = conn.execute("DELETE FROM proxies WHERE id = ?", (proxy_id,))
+            conn.commit()
+            return cur.rowcount > 0, affected
+
+        return self._run(_op)
 
     # --- Accounts ---
     def list_accounts(self) -> list[dict[str, Any]]:
-        with self._lock:
-            conn = self._connect()
-            try:
-                rows = conn.execute(
-                    """
-                    SELECT a.*, p.proxy_url as joined_proxy_url, p.ip as proxy_ip, p.status as proxy_status
-                    FROM accounts a
-                    LEFT JOIN proxies p ON a.proxy_id = p.id
-                    ORDER BY a.created_at DESC
-                    """
-                ).fetchall()
-                out = []
-                for r in rows:
-                    d = dict(r)
-                    d["effective_proxy_url"] = d.get("joined_proxy_url") or ""
-                    out.append(d)
-                return out
-            finally:
-                conn.close()
+        def _op(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+            rows = conn.execute(
+                """
+                SELECT a.*, p.proxy_url as joined_proxy_url, p.ip as proxy_ip, p.status as proxy_status
+                FROM accounts a
+                LEFT JOIN proxies p ON a.proxy_id = p.id
+                ORDER BY a.created_at DESC
+                """
+            ).fetchall()
+            out = []
+            for r in rows:
+                d = dict(r)
+                d["effective_proxy_url"] = d.get("joined_proxy_url") or ""
+                out.append(d)
+            return out
+
+        return self._run(_op)
 
     def get_account(self, account_id: str) -> dict[str, Any] | None:
-        with self._lock:
-            conn = self._connect()
-            try:
-                row = conn.execute(
-                    """
-                    SELECT a.*, p.proxy_url as joined_proxy_url, p.ip as proxy_ip, p.status as proxy_status
-                    FROM accounts a
-                    LEFT JOIN proxies p ON a.proxy_id = p.id
-                    WHERE a.id = ?
-                    """,
-                    (account_id,),
-                ).fetchone()
-                if not row:
-                    return None
-                d = dict(row)
-                d["effective_proxy_url"] = d.get("joined_proxy_url") or ""
-                return d
-            finally:
-                conn.close()
+        def _op(conn: sqlite3.Connection) -> dict[str, Any] | None:
+            row = conn.execute(
+                """
+                SELECT a.*, p.proxy_url as joined_proxy_url, p.ip as proxy_ip, p.status as proxy_status
+                FROM accounts a
+                LEFT JOIN proxies p ON a.proxy_id = p.id
+                WHERE a.id = ?
+                """,
+                (account_id,),
+            ).fetchone()
+            if not row:
+                return None
+            d = dict(row)
+            d["effective_proxy_url"] = d.get("joined_proxy_url") or ""
+            return d
+
+        return self._run(_op)
 
     def create_account(self, account_id: str, label: str, cookies: dict[str, str],
                        proxy_id: str | None = None, enabled: bool = True, status: str = "unknown",
                        supported_models: list[str] | None = None) -> dict[str, Any]:
         now = time.time()
         models_list = list(SUPPORTED_MODEL_TYPES) if supported_models is None else normalize_supported_models(supported_models)
-        with self._lock:
-            conn = self._connect()
-            try:
-                conn.execute(
-                    """
-                    INSERT INTO accounts (id, label, cookies_json, proxy_id, enabled, supported_models_json, status, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (
-                        account_id,
-                        label,
-                        json.dumps(cookies),
-                        proxy_id,
-                        1 if enabled else 0,
-                        json.dumps(models_list),
-                        status,
-                        now,
-                        now,
-                    ),
-                )
-                conn.commit()
-            finally:
-                conn.close()
+
+        def _op(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                """
+                INSERT INTO accounts (id, label, cookies_json, proxy_id, enabled, supported_models_json, status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    account_id,
+                    label,
+                    json.dumps(cookies),
+                    proxy_id,
+                    1 if enabled else 0,
+                    json.dumps(models_list),
+                    status,
+                    now,
+                    now,
+                ),
+            )
+            conn.commit()
+
+        self._run(_op)
         return self.get_account(account_id)  # type: ignore[return-value]
 
     def update_account(self, account_id: str, **fields: Any) -> dict[str, Any] | None:
@@ -495,59 +645,53 @@ class Database:
         updates["updated_at"] = time.time()
         cols = ", ".join(f"{k} = ?" for k in updates)
         vals = list(updates.values()) + [account_id]
-        with self._lock:
-            conn = self._connect()
-            try:
-                conn.execute(f"UPDATE accounts SET {cols} WHERE id = ?", vals)
-                conn.commit()
-            finally:
-                conn.close()
+
+        def _op(conn: sqlite3.Connection) -> None:
+            conn.execute(f"UPDATE accounts SET {cols} WHERE id = ?", vals)
+            conn.commit()
+
+        self._run(_op)
         return self.get_account(account_id)
 
     def delete_account(self, account_id: str) -> bool:
-        with self._lock:
-            conn = self._connect()
-            try:
-                cur = conn.execute("DELETE FROM accounts WHERE id = ?", (account_id,))
-                conn.commit()
-                return cur.rowcount > 0
-            finally:
-                conn.close()
+        def _op(conn: sqlite3.Connection) -> bool:
+            cur = conn.execute("DELETE FROM accounts WHERE id = ?", (account_id,))
+            conn.commit()
+            return cur.rowcount > 0
+
+        return self._run(_op)
 
     def add_keepalive_log(self, account_id: str, status: str, vm_state: str = "", message: str = "") -> None:
         now = time.time()
-        with self._lock:
-            conn = self._connect()
-            try:
-                conn.execute(
-                    "INSERT INTO keepalive_logs (account_id, status, vm_state, message, created_at) VALUES (?, ?, ?, ?, ?)",
-                    (account_id, status, vm_state, message[:500], now),
+
+        def _op(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                "INSERT INTO keepalive_logs (account_id, status, vm_state, message, created_at) VALUES (?, ?, ?, ?, ?)",
+                (account_id, status, vm_state, message[:500], now),
+            )
+            # Retain only latest 20 logs per account
+            conn.execute(
+                """
+                DELETE FROM keepalive_logs WHERE account_id = ? AND id NOT IN (
+                    SELECT id FROM keepalive_logs WHERE account_id = ? ORDER BY id DESC LIMIT 20
                 )
-                # Retain only latest 20 logs per account
-                conn.execute(
-                    """
-                    DELETE FROM keepalive_logs WHERE account_id = ? AND id NOT IN (
-                        SELECT id FROM keepalive_logs WHERE account_id = ? ORDER BY id DESC LIMIT 20
-                    )
-                    """,
-                    (account_id, account_id),
-                )
-                conn.commit()
-            finally:
-                conn.close()
+                """,
+                (account_id, account_id),
+            )
+            conn.commit()
+
+        self._run(_op)
 
     def list_keepalive_logs(self, limit: int = 30) -> list[dict[str, Any]]:
-        with self._lock:
-            conn = self._connect()
-            try:
-                rows = conn.execute(
-                    "SELECT k.*, a.label as account_label FROM keepalive_logs k "
-                    "LEFT JOIN accounts a ON k.account_id = a.id ORDER BY k.id DESC LIMIT ?",
-                    (limit,),
-                ).fetchall()
-                return [dict(r) for r in rows]
-            finally:
-                conn.close()
+        def _op(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+            rows = conn.execute(
+                "SELECT k.*, a.label as account_label FROM keepalive_logs k "
+                "LEFT JOIN accounts a ON k.account_id = a.id ORDER BY k.id DESC LIMIT ?",
+                (limit,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+        return self._run(_op)
 
     # --- Tasks ---
     def create_task(self, task_id: str, task_type: str, status: str = "queued",
@@ -555,20 +699,19 @@ class Database:
                     input_request: Any = None) -> dict[str, Any]:
         now = time.time()
         input_request_json = serialize_input_request(input_request) if input_request is not None else ""
-        with self._lock:
-            conn = self._connect()
-            try:
-                conn.execute(
-                    """
-                    INSERT INTO tasks (id, type, status, account_id, model, prompt_preview, input_request_json, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                    """,
-                    (task_id, task_type, status, account_id, model, prompt_preview[:200], input_request_json, now, now),
-                )
-                conn.commit()
-                return dict(conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone())
-            finally:
-                conn.close()
+
+        def _op(conn: sqlite3.Connection) -> dict[str, Any]:
+            conn.execute(
+                """
+                INSERT INTO tasks (id, type, status, account_id, model, prompt_preview, input_request_json, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (task_id, task_type, status, account_id, model, prompt_preview[:200], input_request_json, now, now),
+            )
+            conn.commit()
+            return dict(conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone())
+
+        return self._run(_op)
 
     def update_task(self, task_id: str, **fields: Any) -> dict[str, Any] | None:
         allowed = {"status", "account_id", "session_id", "media_filename", "error_message", "latency_ms"}
@@ -578,60 +721,56 @@ class Database:
         updates["updated_at"] = time.time()
         cols = ", ".join(f"{k} = ?" for k in updates)
         vals = list(updates.values()) + [task_id]
-        with self._lock:
-            conn = self._connect()
-            try:
-                conn.execute(f"UPDATE tasks SET {cols} WHERE id = ?", vals)
-                conn.commit()
-                row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
-                return dict(row) if row else None
-            finally:
-                conn.close()
+
+        def _op(conn: sqlite3.Connection) -> dict[str, Any] | None:
+            conn.execute(f"UPDATE tasks SET {cols} WHERE id = ?", vals)
+            conn.commit()
+            row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
+            return dict(row) if row else None
+
+        return self._run(_op)
 
     def get_task(self, task_id: str) -> dict[str, Any] | None:
-        with self._lock:
-            conn = self._connect()
-            try:
-                row = conn.execute(
-                    "SELECT t.*, a.label as account_label FROM tasks t "
-                    "LEFT JOIN accounts a ON t.account_id = a.id WHERE t.id = ?",
-                    (task_id,),
-                ).fetchone()
-                if not row:
-                    return None
-                d = dict(row)
-                raw = d.get("input_request_json") or ""
-                if raw:
-                    try:
-                        d["input_request"] = json.loads(raw)
-                    except json.JSONDecodeError:
-                        d["input_request"] = {"raw": raw}
-                else:
-                    d["input_request"] = None
-                return d
-            finally:
-                conn.close()
+        def _op(conn: sqlite3.Connection) -> dict[str, Any] | None:
+            row = conn.execute(
+                "SELECT t.*, a.label as account_label FROM tasks t "
+                "LEFT JOIN accounts a ON t.account_id = a.id WHERE t.id = ?",
+                (task_id,),
+            ).fetchone()
+            if not row:
+                return None
+            d = dict(row)
+            raw = d.get("input_request_json") or ""
+            if raw:
+                try:
+                    d["input_request"] = json.loads(raw)
+                except json.JSONDecodeError:
+                    d["input_request"] = {"raw": raw}
+            else:
+                d["input_request"] = None
+            return d
+
+        return self._run(_op)
 
     def fail_orphaned_tasks(self, reason: str = "Server restarted while task was in progress") -> int:
         """Mark any leftover queued/running tasks as failed on startup."""
         now = time.time()
-        with self._lock:
-            conn = self._connect()
-            try:
-                cur = conn.execute(
-                    """
-                    UPDATE tasks
-                    SET status = 'failed',
-                        error_message = CASE WHEN error_message = '' THEN ? ELSE error_message END,
-                        updated_at = ?
-                    WHERE status IN ('queued', 'running')
-                    """,
-                    (reason, now),
-                )
-                conn.commit()
-                return cur.rowcount
-            finally:
-                conn.close()
+
+        def _op(conn: sqlite3.Connection) -> int:
+            cur = conn.execute(
+                """
+                UPDATE tasks
+                SET status = 'failed',
+                    error_message = CASE WHEN error_message = '' THEN ? ELSE error_message END,
+                    updated_at = ?
+                WHERE status IN ('queued', 'running')
+                """,
+                (reason, now),
+            )
+            conn.commit()
+            return cur.rowcount
+
+        return self._run(_op)
 
     @staticmethod
     def _task_filter_sql(task_type: str = "", status: str = "") -> tuple[str, list[Any]]:
@@ -648,88 +787,81 @@ class Database:
 
     def count_tasks(self, task_type: str = "", status: str = "") -> int:
         where, params = self._task_filter_sql(task_type, status)
-        with self._lock:
-            conn = self._connect()
-            try:
-                row = conn.execute(f"SELECT COUNT(*) FROM tasks t {where}", params).fetchone()
-                return int(row[0]) if row else 0
-            finally:
-                conn.close()
+
+        def _op(conn: sqlite3.Connection) -> int:
+            row = conn.execute(f"SELECT COUNT(*) FROM tasks t {where}", params).fetchone()
+            return int(row[0]) if row else 0
+
+        return self._run(_op)
 
     def list_tasks(self, task_type: str = "", status: str = "", limit: int = 50, offset: int = 0) -> list[dict[str, Any]]:
         where, params = self._task_filter_sql(task_type, status)
         params.extend([limit, offset])
-        with self._lock:
-            conn = self._connect()
-            try:
-                rows = conn.execute(
-                    "SELECT t.id, t.type, t.status, t.account_id, t.model, t.prompt_preview, "
-                    "t.session_id, t.media_filename, t.error_message, t.latency_ms, "
-                    "t.created_at, t.updated_at, a.label as account_label FROM tasks t "
-                    f"LEFT JOIN accounts a ON t.account_id = a.id {where} "
-                    f"ORDER BY t.created_at DESC LIMIT ? OFFSET ?",
-                    params,
-                ).fetchall()
-                return [dict(r) for r in rows]
-            finally:
-                conn.close()
+
+        def _op(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+            rows = conn.execute(
+                "SELECT t.id, t.type, t.status, t.account_id, t.model, t.prompt_preview, "
+                "t.session_id, t.media_filename, t.error_message, t.latency_ms, "
+                "t.created_at, t.updated_at, a.label as account_label FROM tasks t "
+                f"LEFT JOIN accounts a ON t.account_id = a.id {where} "
+                f"ORDER BY t.created_at DESC LIMIT ? OFFSET ?",
+                params,
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+        return self._run(_op)
 
     def delete_task(self, task_id: str) -> tuple[bool, list[str]]:
-        with self._lock:
-            conn = self._connect()
-            try:
-                row = conn.execute("SELECT media_filename, status FROM tasks WHERE id = ?", (task_id,)).fetchone()
-                if not row or row["status"] == "running":
-                    return False, []
-                fn = row["media_filename"] or ""
-                conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
-                orphan_files: list[str] = []
-                if fn:
-                    still = conn.execute("SELECT 1 FROM tasks WHERE media_filename = ? LIMIT 1", (fn,)).fetchone()
-                    if not still:
-                        orphan_files.append(fn)
-                conn.commit()
-                return True, orphan_files
-            finally:
-                conn.close()
+        def _op(conn: sqlite3.Connection) -> tuple[bool, list[str]]:
+            row = conn.execute("SELECT media_filename, status FROM tasks WHERE id = ?", (task_id,)).fetchone()
+            if not row or row["status"] == "running":
+                return False, []
+            fn = row["media_filename"] or ""
+            conn.execute("DELETE FROM tasks WHERE id = ?", (task_id,))
+            orphan_files: list[str] = []
+            if fn:
+                still = conn.execute("SELECT 1 FROM tasks WHERE media_filename = ? LIMIT 1", (fn,)).fetchone()
+                if not still:
+                    orphan_files.append(fn)
+            conn.commit()
+            return True, orphan_files
+
+        return self._run(_op)
 
     def clear_completed_tasks(self) -> tuple[int, list[str]]:
-        with self._lock:
-            conn = self._connect()
-            try:
-                rows = conn.execute(
-                    "SELECT DISTINCT media_filename FROM tasks WHERE status NOT IN ('running', 'queued') AND media_filename != ''"
-                ).fetchall()
-                candidates = [r["media_filename"] for r in rows]
-                cur = conn.execute("DELETE FROM tasks WHERE status NOT IN ('running', 'queued')")
-                orphan_files: list[str] = []
-                for fn in candidates:
-                    still = conn.execute("SELECT 1 FROM tasks WHERE media_filename = ? LIMIT 1", (fn,)).fetchone()
-                    if not still:
-                        orphan_files.append(fn)
-                conn.commit()
-                return cur.rowcount, orphan_files
-            finally:
-                conn.close()
+        def _op(conn: sqlite3.Connection) -> tuple[int, list[str]]:
+            rows = conn.execute(
+                "SELECT DISTINCT media_filename FROM tasks WHERE status NOT IN ('running', 'queued') AND media_filename != ''"
+            ).fetchall()
+            candidates = [r["media_filename"] for r in rows]
+            cur = conn.execute("DELETE FROM tasks WHERE status NOT IN ('running', 'queued')")
+            orphan_files: list[str] = []
+            for fn in candidates:
+                still = conn.execute("SELECT 1 FROM tasks WHERE media_filename = ? LIMIT 1", (fn,)).fetchone()
+                if not still:
+                    orphan_files.append(fn)
+            conn.commit()
+            return cur.rowcount, orphan_files
+
+        return self._run(_op)
 
     def task_stats_7days(self) -> list[dict[str, Any]]:
         cutoff = time.time() - 7 * 86400
-        with self._lock:
-            conn = self._connect()
-            try:
-                rows = conn.execute(
-                    """
-                    SELECT date(created_at, 'unixepoch', 'localtime') as day,
-                           COUNT(*) as total,
-                           SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed,
-                           SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed
-                    FROM tasks
-                    WHERE created_at >= ?
-                    GROUP BY day
-                    ORDER BY day ASC
-                    """,
-                    (cutoff,),
-                ).fetchall()
-                return [dict(r) for r in rows]
-            finally:
-                conn.close()
+
+        def _op(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+            rows = conn.execute(
+                """
+                SELECT date(created_at, 'unixepoch', 'localtime') as day,
+                       COUNT(*) as total,
+                       SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) as completed,
+                       SUM(CASE WHEN status = 'failed' THEN 1 ELSE 0 END) as failed
+                FROM tasks
+                WHERE created_at >= ?
+                GROUP BY day
+                ORDER BY day ASC
+                """,
+                (cutoff,),
+            ).fetchall()
+            return [dict(r) for r in rows]
+
+        return self._run(_op)

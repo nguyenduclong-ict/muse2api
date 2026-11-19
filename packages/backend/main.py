@@ -69,6 +69,7 @@ async def lifespan(app: FastAPI):
         cleanup.stop()
         wss_pool.stop_background()
         wss_pool.close_all()
+        db.close()
 
 
 app = FastAPI(title="muse2apiv2", version="2.0.0", lifespan=lifespan)

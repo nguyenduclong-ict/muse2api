@@ -11,8 +11,10 @@ services:
         required: false
     environment:
       MUSE2API_DATA_DIR: /app/data
+      MUSE2API_DB_PATH: /app/db/muse2apiv2.db
     volumes:
       - ./data:/app/data
+      - muse2apiv2_db:/app/db
     restart: unless-stopped
     healthcheck:
       test:
@@ -26,3 +28,6 @@ services:
       timeout: 5s
       retries: 3
       start_period: 15s
+
+volumes:
+  muse2apiv2_db:

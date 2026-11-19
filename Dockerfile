@@ -9,6 +9,9 @@ RUN npm run build
 # Stage 2: Python FastAPI runtime with uv
 FROM python:3.12-slim AS runtime
 COPY --from=ghcr.io/astral-sh/uv:latest /uv /uvx /bin/
+RUN apt-get update \
+    && apt-get install -y --no-install-recommends ffmpeg \
+    && rm -rf /var/lib/apt/lists/*
 WORKDIR /app
 
 ENV PYTHONDONTWRITEBYTECODE=1 \
@@ -23,7 +26,7 @@ COPY extension/ ./extension/
 COPY .env.example ./.env.example
 COPY --from=frontend-builder /app/packages/frontend/dist ./packages/frontend/dist
 
-RUN mkdir -p /app/data/media
+RUN mkdir -p /app/data/media /app/db
 
 WORKDIR /app/packages/backend
 EXPOSE 8000

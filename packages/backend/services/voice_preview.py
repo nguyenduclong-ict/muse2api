@@ -64,9 +64,11 @@ def build_speech_prompt(
     instructions: str | None = None,
     speed: float | None = None,
     language: str | None = None,
+    output_format: str = "mp3",
 ) -> str:
     """Format user prompt instructions for Muse WSS speech generation."""
     lang = (language or "en").strip() or "en"
+    fmt = (output_format or "mp3").strip().lower()
     if speed is None or speed <= 0:
         speed_pct = 100
     elif speed <= 10:
@@ -74,8 +76,9 @@ def build_speech_prompt(
     else:
         speed_pct = round(speed)
 
+    format_desc = "a WAV (16-bit PCM)" if fmt == "wav" else "an MP3"
     header_lines = [
-        f'Generate an MP3 audio speech file using voice "{voice_id}" ({voice_name}).',
+        f'Generate {format_desc} audio speech file using voice "{voice_id}" ({voice_name}).',
         f"Language: {lang}. Speed: {speed_pct}.",
         "Audio output: normalize to -16 LUFS, true peak max -1.5 dB, do not clip.",
     ]

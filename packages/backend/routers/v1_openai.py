@@ -17,6 +17,12 @@ from fastapi.responses import FileResponse, StreamingResponse
 from pydantic import BaseModel, Field
 
 from auth import require_v1_api_key
+from services.audio_format import (
+    AUDIO_MEDIA_TYPES,
+    BINARY_SPEECH_FORMATS,
+    SUPPORTED_SPEECH_FORMATS,
+    ensure_audio_file_format,
+)
 from services.ref_media import RefMediaError, load_reference_list
 from services.voice_preview import build_speech_prompt as _build_speech_prompt
 from services.voices import (
@@ -201,6 +207,14 @@ def _build_media_prompt(kind: str, prompt: str, ratio: str | None, duration: int
     return full
 
 
+def _safe_fail_task(db: Any, task_id: str, error_message: str, latency_ms: int) -> None:
+    """Persist failed task status without letting a secondary DB error mask the root cause."""
+    try:
+        db.update_task(task_id, status="failed", error_message=error_message, latency_ms=latency_ms)
+    except Exception:
+        logger.warning("Failed to record failed status for task %s", task_id, exc_info=True)
+
+
 def _run_async_media(db, pool, task_id: str, prompt: str, expect_kind: str,
                      refs: list[tuple[bytes, str]] | None, timeout: float) -> None:
     t0 = time.time()
@@ -222,7 +236,7 @@ def _run_async_media(db, pool, task_id: str, prompt: str, expect_kind: str,
             latency_ms=int((time.time() - t0) * 1000),
         )
     except Exception as exc:
-        db.update_task(task_id, status="failed", error_message=str(exc), latency_ms=int((time.time() - t0) * 1000))
+        _safe_fail_task(db, task_id, str(exc), int((time.time() - t0) * 1000))
 
 
 def _media_file_meta(cfg, filename: str, expect_kind: str) -> dict[str, Any]:
@@ -290,7 +304,7 @@ def chat_completions(body: ChatCompletionReq, request: Request):
                         yield "data: [DONE]\n\n"
                 db.update_task(task_id, status="completed", latency_ms=int((time.time() - t0) * 1000))
             except Exception as exc:
-                db.update_task(task_id, status="failed", error_message=str(exc), latency_ms=int((time.time() - t0) * 1000))
+                _safe_fail_task(db, task_id, str(exc), int((time.time() - t0) * 1000))
                 yield f"data: {json.dumps({'error': {'message': str(exc)}})}\n\n"
 
         return StreamingResponse(sse_gen(), media_type="text/event-stream")
@@ -306,11 +320,11 @@ def chat_completions(body: ChatCompletionReq, request: Request):
             "choices": [{"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": "stop"}],
         }
     except NoCandidateAccountError as exc:
-        db.update_task(task_id, status="failed", error_message=str(exc), latency_ms=int((time.time() - t0) * 1000))
+        _safe_fail_task(db, task_id, str(exc), int((time.time() - t0) * 1000))
         raise HTTPException(status_code=503, detail={"error": {"message": str(exc), "type": "service_unavailable_error"}})
     except Exception as exc:
         logger.exception("POST %s failed (task_id=%s)", request.url.path, task_id)
-        db.update_task(task_id, status="failed", error_message=str(exc), latency_ms=int((time.time() - t0) * 1000))
+        _safe_fail_task(db, task_id, str(exc), int((time.time() - t0) * 1000))
         raise HTTPException(status_code=502, detail={"error": {"message": str(exc), "type": "server_error"}})
 
 
@@ -364,7 +378,7 @@ def responses_endpoint(body: ResponsesReq, request: Request):
                         yield f"event: response.completed\ndata: {json.dumps(comp)}\n\n"
                 db.update_task(task_id, status="completed", latency_ms=int((time.time() - t0) * 1000))
             except Exception as exc:
-                db.update_task(task_id, status="failed", error_message=str(exc), latency_ms=int((time.time() - t0) * 1000))
+                _safe_fail_task(db, task_id, str(exc), int((time.time() - t0) * 1000))
                 yield f"event: error\ndata: {json.dumps({'type': 'error', 'error': {'message': str(exc)}})}\n\n"
 
         return StreamingResponse(resp_sse(), media_type="text/event-stream")
@@ -380,11 +394,11 @@ def responses_endpoint(body: ResponsesReq, request: Request):
             "output": [{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": text}]}],
         }
     except NoCandidateAccountError as exc:
-        db.update_task(task_id, status="failed", error_message=str(exc), latency_ms=int((time.time() - t0) * 1000))
+        _safe_fail_task(db, task_id, str(exc), int((time.time() - t0) * 1000))
         raise HTTPException(status_code=503, detail={"error": {"message": str(exc), "type": "service_unavailable_error"}})
     except Exception as exc:
         logger.exception("POST %s failed (task_id=%s)", request.url.path, task_id)
-        db.update_task(task_id, status="failed", error_message=str(exc), latency_ms=int((time.time() - t0) * 1000))
+        _safe_fail_task(db, task_id, str(exc), int((time.time() - t0) * 1000))
         raise HTTPException(status_code=502, detail={"error": {"message": str(exc), "type": "server_error"}})
 
 
@@ -437,11 +451,11 @@ def images_generations(body: ImageGenReq, request: Request):
                 item["b64_json"] = base64.b64encode(f.read()).decode("ascii")
         return {"created": int(time.time()), "data": [item]}
     except NoCandidateAccountError as exc:
-        db.update_task(task_id, status="failed", error_message=str(exc), latency_ms=int((time.time() - t0) * 1000))
+        _safe_fail_task(db, task_id, str(exc), int((time.time() - t0) * 1000))
         raise HTTPException(status_code=503, detail={"error": {"message": str(exc), "type": "service_unavailable_error"}})
     except Exception as exc:
         logger.exception("POST %s failed (task_id=%s)", request.url.path, task_id)
-        db.update_task(task_id, status="failed", error_message=str(exc), latency_ms=int((time.time() - t0) * 1000))
+        _safe_fail_task(db, task_id, str(exc), int((time.time() - t0) * 1000))
         raise HTTPException(status_code=502, detail={"error": {"message": str(exc), "type": "server_error"}})
 
 
@@ -571,11 +585,11 @@ async def images_edits(request: Request):
                 item_out["b64_json"] = base64.b64encode(fp.read()).decode("ascii")
         return {"created": int(time.time()), "data": [item_out]}
     except NoCandidateAccountError as exc:
-        db.update_task(task_id, status="failed", error_message=str(exc), latency_ms=int((time.time() - t0) * 1000))
+        _safe_fail_task(db, task_id, str(exc), int((time.time() - t0) * 1000))
         raise HTTPException(status_code=503, detail={"error": {"message": str(exc), "type": "service_unavailable_error"}})
     except Exception as exc:
         logger.exception("POST %s failed (task_id=%s)", request.url.path, task_id)
-        db.update_task(task_id, status="failed", error_message=str(exc), latency_ms=int((time.time() - t0) * 1000))
+        _safe_fail_task(db, task_id, str(exc), int((time.time() - t0) * 1000))
         raise HTTPException(status_code=502, detail={"error": {"message": str(exc), "type": "server_error"}})
 
 
@@ -827,10 +841,10 @@ async def create_speech(body: SpeechReq, request: Request):
         )
 
     fmt = (body.response_format or "mp3").strip().lower()
-    if fmt not in {"mp3", "url", "json"}:
+    if fmt not in SUPPORTED_SPEECH_FORMATS:
         raise HTTPException(
             status_code=400,
-            detail={"error": {"message": f"Unsupported response_format '{body.response_format}'. Only 'mp3', 'url', and 'json' are supported.", "type": "invalid_request_error"}},
+            detail={"error": {"message": f"Unsupported response_format '{body.response_format}'. Only 'mp3', 'wav', 'url', and 'json' are supported.", "type": "invalid_request_error"}},
         )
 
     allowed_langs = _get_allowed_voice_languages(db)
@@ -867,6 +881,7 @@ async def create_speech(body: SpeechReq, request: Request):
         instructions=body.instructions,
         speed=body.speed,
         language=get_voice_language_code(voice_info),
+        output_format="wav" if fmt == "wav" else "mp3",
     )
     timeout = float(body.timeout or 180)
     task_id = f"aud_{secrets.token_hex(6)}"
@@ -890,17 +905,28 @@ async def create_speech(body: SpeechReq, request: Request):
             skip_system_prompt=True,
             on_account_selected=lambda aid, sid: db.update_task(task_id, account_id=aid, session_id=sid),
         )
+        final_filename = res["filename"]
+        file_path = os.path.join(cfg.media_dir, final_filename)
+        final_size = res.get("size_bytes", res.get("bytes", 0))
+        converted = False
+
+        if fmt in BINARY_SPEECH_FORMATS:
+            file_path, converted = await run_in_threadpool(ensure_audio_file_format, file_path, fmt)
+            final_filename = os.path.basename(file_path)
+            if os.path.isfile(file_path):
+                final_size = os.path.getsize(file_path)
+
         db.update_task(
             task_id,
             status="completed",
             account_id=res["account_id"],
             session_id=res["session_id"],
-            media_filename=res["filename"],
+            media_filename=final_filename,
             latency_ms=int((time.time() - t0) * 1000),
         )
 
         base = str(request.base_url).rstrip("/")
-        media_url = f"{base}/v1/media/{res['filename']}"
+        media_url = f"{base}/v1/media/{final_filename}"
         if fmt in {"url", "json"}:
             return {
                 "created": int(time.time()),
@@ -909,25 +935,25 @@ async def create_speech(body: SpeechReq, request: Request):
                 "voice_name": voice_info["name"],
                 "url": media_url,
                 "kind": "audio",
-                "bytes": res.get("size_bytes", res.get("bytes", 0)),
+                "bytes": final_size,
             }
 
-        file_path = os.path.join(cfg.media_dir, res["filename"])
         return FileResponse(
             file_path,
-            media_type="audio/mpeg",
-            filename=res["filename"],
+            media_type=AUDIO_MEDIA_TYPES[fmt],
+            filename=final_filename,
             headers={
                 "Cache-Control": "public, max-age=86400",
                 "X-Muse-Media-Url": media_url,
+                "X-Audio-Converted": "1" if converted else "0",
             },
         )
     except NoCandidateAccountError as exc:
-        db.update_task(task_id, status="failed", error_message=str(exc), latency_ms=int((time.time() - t0) * 1000))
+        _safe_fail_task(db, task_id, str(exc), int((time.time() - t0) * 1000))
         raise HTTPException(status_code=503, detail={"error": {"message": str(exc), "type": "service_unavailable_error"}})
     except Exception as exc:
         logger.exception("POST %s failed (task_id=%s)", request.url.path, task_id)
-        db.update_task(task_id, status="failed", error_message=str(exc), latency_ms=int((time.time() - t0) * 1000))
+        _safe_fail_task(db, task_id, str(exc), int((time.time() - t0) * 1000))
         raise HTTPException(status_code=502, detail={"error": {"message": str(exc), "type": "server_error"}})
 
 

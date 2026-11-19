@@ -1,5 +1,16 @@
 # Request changes: OpenAI-Compatible API (`/v1/*`) & API Key
 
+## 2026-11-19 — Hỗ trợ `response_format="wav"` + `"mp3"` cho `POST /v1/audio/speech` (tiêm prompt + fallback `ffmpeg`)
+
+- **Yêu cầu:** Hỗ trợ sinh và trả về định dạng `.wav` (16-bit PCM) song song với `.mp3` trên `POST /v1/audio/speech` cho các client như `../cartoonkit`, theo cơ chế tiêm định dạng đích vào prompt gửi Muse, kiểm tra định dạng thực tế qua header/magic bytes và tự động chạy `ffmpeg` convert fallback nếu Muse trả không đúng định dạng yêu cầu; giữ nguyên từ chối `400` với các định dạng khác (`opus`, `aac`, `flac`, `pcm`).
+- **Phân loại:** Feature mở rộng
+- **Đặc tả thay đổi:**
+  - `spec.md`: cập nhật Phạm vi (`Out of Scope` bỏ `wav`), `FR-112`, `BR-107`, `BR-108`, `AC-109`.
+  - `logic.md`: cập nhật Mục 5 bổ sung `output_format` trong `build_speech_prompt`, kiểm tra magic bytes / PCM16 WAV và `ffmpeg` fallback (`services/audio_format.py`).
+  - `../../02_basic_design/01_api_overview.md`: cập nhật mô tả `POST /v1/audio/speech` hỗ trợ `.mp3`/`.wav` binary và `url` JSON.
+- **Quyết định:** Chỉ hỗ trợ 2 định dạng audio nhị phân (`mp3`, `wav`) cùng `url`/`json`; cài `ffmpeg` trong `Dockerfile`; xác thực RIFF/WAVE 16-bit PCM bằng thư viện `wave` và MP3 qua `ID3`/MPEG sync frame thay vì chỉ tin phần mở rộng file; cập nhật `tasks.media_filename` sau bước kiểm tra/convert để khớp tệp lưu thực tế.
+- **Task:** triển khai trực tiếp
+
 ## 2026-11-19 — Trả trường `long_description` trên `GET /v1/audio/voices` & Đồng bộ catalog giọng tuyển chọn
 
 - **Yêu cầu:** Endpoint `GET /v1/audio/voices` (và alias `/v1/voices`) bắt buộc trả trường `long_description` (mô tả chi tiết âm vực, phong cách, sắc thái và đối tượng giọng nói) cho các agent và client tiêu thụ; bảo toàn danh mục `voices.json` đã được tuyển chọn (280 giọng đại diện phân bố đều theo 31 nhóm ngôn ngữ).
