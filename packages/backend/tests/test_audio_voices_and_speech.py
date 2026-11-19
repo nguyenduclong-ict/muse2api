@@ -1,4 +1,5 @@
 """Unit and Integration tests for Voice catalog, TTS prompt builder, and /v1/audio endpoints."""
+
 import asyncio
 import json
 import os
@@ -27,7 +28,14 @@ from services.voices import (
 from services.wss_pool import WSSPool
 
 
-async def call_asgi(app_instance, method: str, path: str, headers: list[tuple[bytes, bytes]] = None, body: bytes = b"", query_string: bytes = b""):
+async def call_asgi(
+    app_instance,
+    method: str,
+    path: str,
+    headers: list[tuple[bytes, bytes]] = None,
+    body: bytes = b"",
+    query_string: bytes = b"",
+):
     """Lightweight ASGI caller without external httpx dependency."""
     status_code = None
     response_headers = []
@@ -67,7 +75,9 @@ async def call_asgi(app_instance, method: str, path: str, headers: list[tuple[by
         task.cancel()
         raise TimeoutError(f"ASGI request timed out: {method} {path}")
 
-    resp_headers_dict = {k.decode("latin1").lower(): v.decode("latin1") for k, v in response_headers}
+    resp_headers_dict = {
+        k.decode("latin1").lower(): v.decode("latin1") for k, v in response_headers
+    }
     return status_code, resp_headers_dict, b"".join(body_chunks)
 
 
@@ -112,7 +122,9 @@ class TestVoiceCatalog(unittest.TestCase):
         # Query filter on name / description / long_description
         marshmallow_search = list_voices(q="marshmallow")
         self.assertGreater(len(marshmallow_search), 0)
-        self.assertTrue(any(v["name"] == "Timid Marshmallow" for v in marshmallow_search))
+        self.assertTrue(
+            any(v["name"] == "Timid Marshmallow" for v in marshmallow_search)
+        )
 
         long_desc_search = list_voices(q="cautious")
         self.assertGreater(len(long_desc_search), 0)
@@ -162,7 +174,9 @@ class TestVoiceCatalog(unittest.TestCase):
 
     def test_normalize_voice_languages(self):
         # Legacy "English" should expand to all 13 English country groups
-        norm = normalize_voice_languages(["vietnamese", "ENGLISH", "invalid_group", "japanese", "vietnamese"])
+        norm = normalize_voice_languages(
+            ["vietnamese", "ENGLISH", "invalid_group", "japanese", "vietnamese"]
+        )
         self.assertIn("English (US)", norm)
         self.assertIn("English (UK)", norm)
         self.assertIn("English (Canada)", norm)
@@ -187,15 +201,28 @@ class TestVoiceCatalog(unittest.TestCase):
         # list_voices with allowed_languages
         allowed = list_voices(allowed_languages=["Vietnamese", "Japanese"])
         self.assertEqual(len(allowed), 13)
-        self.assertTrue(all(get_voice_language_group(v) in {"Vietnamese", "Japanese"} for v in allowed))
+        self.assertTrue(
+            all(
+                get_voice_language_group(v) in {"Vietnamese", "Japanese"}
+                for v in allowed
+            )
+        )
 
         # Query by canonical group name
-        vn_only = list_voices(language="Vietnamese", allowed_languages=["English (US)", "Vietnamese"])
+        vn_only = list_voices(
+            language="Vietnamese", allowed_languages=["English (US)", "Vietnamese"]
+        )
         self.assertEqual(len(vn_only), 7)
 
         # Query by legacy group name "English"
-        expected_eng = len(list_voices(language="English", allowed_languages=["English (US)", "Vietnamese"]))
-        eng_us_only = list_voices(language="English", allowed_languages=["English (US)", "Vietnamese"])
+        expected_eng = len(
+            list_voices(
+                language="English", allowed_languages=["English (US)", "Vietnamese"]
+            )
+        )
+        eng_us_only = list_voices(
+            language="English", allowed_languages=["English (US)", "Vietnamese"]
+        )
         self.assertEqual(len(eng_us_only), expected_eng)
 
 
@@ -227,7 +254,7 @@ class TestSpeechPromptBuilder(unittest.TestCase):
             "- [angry], [sad], [happy], [excited] → adjust pacing and tone to match the mood\n"
             "- Any other [tag] → omit the tag, do not speak it literally\n"
             "\n"
-            "Then speak this text, with the converted sounds in place:\n"
+            "Then speak this text with the converted sounds in place, don't ask any more questions:\n"
             '"Text User want to speech"'
         )
         self.assertEqual(prompt, expected)
@@ -252,7 +279,9 @@ class TestSpeechPromptBuilder(unittest.TestCase):
 
     def test_prompt_with_emotion_cues(self):
         text = "I could not believe it! [laughs] That was hilarious. [whispers] Don't tell anyone."
-        prompt = _build_speech_prompt(text, "avocado_v2:MAI_01", "Aria", "Natural storytelling")
+        prompt = _build_speech_prompt(
+            text, "avocado_v2:MAI_01", "Aria", "Natural storytelling"
+        )
         self.assertIn('using voice "avocado_v2:MAI_01" (Aria)', prompt)
         self.assertIn("Do NOT read any bracket tags literally.", prompt)
         self.assertIn("Style / delivery instructions: Natural storytelling", prompt)
@@ -290,7 +319,9 @@ class TestAudioEndpoints(unittest.IsolatedAsyncioTestCase):
         self.db.update_setting("voice_languages", {"enabled": False, "languages": []})
 
     async def test_get_models_includes_tts(self):
-        status, headers, body = await call_asgi(app, "GET", "/v1/models", headers=self.auth_headers)
+        status, headers, body = await call_asgi(
+            app, "GET", "/v1/models", headers=self.auth_headers
+        )
         self.assertEqual(status, 200)
         data = json.loads(body.decode("utf-8"))
         model_ids = {m["id"] for m in data.get("data", [])}
@@ -302,7 +333,9 @@ class TestAudioEndpoints(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status, 401)
 
     async def test_get_voices_success(self):
-        status, headers, body = await call_asgi(app, "GET", "/v1/audio/voices", headers=self.auth_headers)
+        status, headers, body = await call_asgi(
+            app, "GET", "/v1/audio/voices", headers=self.auth_headers
+        )
         self.assertEqual(status, 200)
         data = json.loads(body.decode("utf-8"))
         self.assertEqual(data["object"], "list")
@@ -316,7 +349,11 @@ class TestAudioEndpoints(unittest.IsolatedAsyncioTestCase):
 
         # Test filter params via query string
         status, headers, body = await call_asgi(
-            app, "GET", "/v1/audio/voices", headers=self.auth_headers, query_string=b"gender=F&q=marshmallow"
+            app,
+            "GET",
+            "/v1/audio/voices",
+            headers=self.auth_headers,
+            query_string=b"gender=F&q=marshmallow",
         )
         self.assertEqual(status, 200)
         filtered = json.loads(body.decode("utf-8"))
@@ -324,7 +361,9 @@ class TestAudioEndpoints(unittest.IsolatedAsyncioTestCase):
         self.assertTrue(all(v["gender"] == "F" for v in filtered["data"]))
 
         # Test alias /v1/voices
-        status, headers, body = await call_asgi(app, "GET", "/v1/voices", headers=self.auth_headers)
+        status, headers, body = await call_asgi(
+            app, "GET", "/v1/voices", headers=self.auth_headers
+        )
         self.assertEqual(status, 200)
 
     async def test_admin_settings_voice_languages(self):
@@ -337,7 +376,9 @@ class TestAudioEndpoints(unittest.IsolatedAsyncioTestCase):
         self.assertIn("voice_languages", data)
 
         # Test legacy "English" expansion in GET /admin/settings
-        self.db.update_setting("voice_languages", {"enabled": True, "languages": ["English"]})
+        self.db.update_setting(
+            "voice_languages", {"enabled": True, "languages": ["English"]}
+        )
         status, _, body = await call_asgi(app, "GET", "/admin/settings")
         self.assertEqual(status, 200)
         data = json.loads(body.decode("utf-8"))
@@ -346,41 +387,66 @@ class TestAudioEndpoints(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(len(data["voice_languages"]["languages"]), 13)
 
         # POST /admin/settings updates voice_languages
-        payload = json.dumps({
-            "voice_languages": {
-                "enabled": True,
-                "languages": ["vietnamese", "JAPANESE", "invalid_group"],
+        payload = json.dumps(
+            {
+                "voice_languages": {
+                    "enabled": True,
+                    "languages": ["vietnamese", "JAPANESE", "invalid_group"],
+                }
             }
-        }).encode("utf-8")
+        ).encode("utf-8")
         status, _, body = await call_asgi(
-            app, "POST", "/admin/settings",
+            app,
+            "POST",
+            "/admin/settings",
             headers=[(b"content-type", b"application/json")],
             body=payload,
         )
         self.assertEqual(status, 200)
         updated = json.loads(body.decode("utf-8"))
         self.assertTrue(updated["voice_languages"]["enabled"])
-        self.assertEqual(updated["voice_languages"]["languages"], ["Vietnamese", "Japanese"])
+        self.assertEqual(
+            updated["voice_languages"]["languages"], ["Vietnamese", "Japanese"]
+        )
 
     async def test_voices_filtered_by_settings_languages(self):
-        expected_total = len(list_voices(allowed_languages=["English (US)", "Vietnamese", "Japanese"]))
-        expected_us = len(list_voices(language="English", allowed_languages=["English (US)", "Vietnamese", "Japanese"]))
-        expected_vn = len(list_voices(language="Vietnamese", allowed_languages=["English (US)", "Vietnamese", "Japanese"]))
+        expected_total = len(
+            list_voices(allowed_languages=["English (US)", "Vietnamese", "Japanese"])
+        )
+        expected_us = len(
+            list_voices(
+                language="English",
+                allowed_languages=["English (US)", "Vietnamese", "Japanese"],
+            )
+        )
+        expected_vn = len(
+            list_voices(
+                language="Vietnamese",
+                allowed_languages=["English (US)", "Vietnamese", "Japanese"],
+            )
+        )
 
         # Enable 3 groups: English (US), Vietnamese, Japanese
-        self.db.update_setting("voice_languages", {
-            "enabled": True,
-            "languages": ["English (US)", "Vietnamese", "Japanese"],
-        })
+        self.db.update_setting(
+            "voice_languages",
+            {
+                "enabled": True,
+                "languages": ["English (US)", "Vietnamese", "Japanese"],
+            },
+        )
 
-        status, _, body = await call_asgi(app, "GET", "/v1/audio/voices", headers=self.auth_headers)
+        status, _, body = await call_asgi(
+            app, "GET", "/v1/audio/voices", headers=self.auth_headers
+        )
         self.assertEqual(status, 200)
         data = json.loads(body.decode("utf-8"))
         self.assertEqual(data["total"], expected_total)
 
         # AND filter with legacy query: ?language=English
         status, _, body = await call_asgi(
-            app, "GET", "/v1/audio/voices",
+            app,
+            "GET",
+            "/v1/audio/voices",
             headers=self.auth_headers,
             query_string=b"language=English",
         )
@@ -390,7 +456,9 @@ class TestAudioEndpoints(unittest.IsolatedAsyncioTestCase):
 
         # AND filter with disabled country: ?language=English%20(UK) -> 0 voices
         status, _, body = await call_asgi(
-            app, "GET", "/v1/audio/voices",
+            app,
+            "GET",
+            "/v1/audio/voices",
             headers=self.auth_headers,
             query_string=b"language=English%20(UK)",
         )
@@ -400,7 +468,9 @@ class TestAudioEndpoints(unittest.IsolatedAsyncioTestCase):
 
         # AND filter with query: ?language=Vietnamese
         status, _, body = await call_asgi(
-            app, "GET", "/v1/audio/voices",
+            app,
+            "GET",
+            "/v1/audio/voices",
             headers=self.auth_headers,
             query_string=b"language=Vietnamese",
         )
@@ -410,7 +480,9 @@ class TestAudioEndpoints(unittest.IsolatedAsyncioTestCase):
 
         # AND filter with disabled language: ?language=French -> 0 voices
         status, _, body = await call_asgi(
-            app, "GET", "/v1/audio/voices",
+            app,
+            "GET",
+            "/v1/audio/voices",
             headers=self.auth_headers,
             query_string=b"language=French",
         )
@@ -422,9 +494,11 @@ class TestAudioEndpoints(unittest.IsolatedAsyncioTestCase):
         # Empty input -> 400
         req_body = json.dumps({"input": "   "}).encode("utf-8")
         status, _, body = await call_asgi(
-            app, "POST", "/v1/audio/speech",
+            app,
+            "POST",
+            "/v1/audio/speech",
             headers=self.auth_headers + [(b"content-type", b"application/json")],
-            body=req_body
+            body=req_body,
         )
         self.assertEqual(status, 400)
         self.assertIn("input must be non-empty", body.decode("utf-8"))
@@ -432,46 +506,63 @@ class TestAudioEndpoints(unittest.IsolatedAsyncioTestCase):
         # Input too long -> 400
         req_body = json.dumps({"input": "a" * 4097}).encode("utf-8")
         status, _, body = await call_asgi(
-            app, "POST", "/v1/audio/speech",
+            app,
+            "POST",
+            "/v1/audio/speech",
             headers=self.auth_headers + [(b"content-type", b"application/json")],
-            body=req_body
+            body=req_body,
         )
         self.assertEqual(status, 400)
         self.assertIn("input must be non-empty", body.decode("utf-8"))
 
         # Unsupported format -> 400
-        req_body = json.dumps({"input": "Hello", "response_format": "wav"}).encode("utf-8")
+        req_body = json.dumps({"input": "Hello", "response_format": "wav"}).encode(
+            "utf-8"
+        )
         status, _, body = await call_asgi(
-            app, "POST", "/v1/audio/speech",
+            app,
+            "POST",
+            "/v1/audio/speech",
             headers=self.auth_headers + [(b"content-type", b"application/json")],
-            body=req_body
+            body=req_body,
         )
         self.assertEqual(status, 400)
         self.assertIn("Unsupported response_format", body.decode("utf-8"))
 
         # Unknown voice -> 400
-        req_body = json.dumps({"input": "Hello", "voice": "unknown_voice_xyz"}).encode("utf-8")
+        req_body = json.dumps({"input": "Hello", "voice": "unknown_voice_xyz"}).encode(
+            "utf-8"
+        )
         status, _, body = await call_asgi(
-            app, "POST", "/v1/audio/speech",
+            app,
+            "POST",
+            "/v1/audio/speech",
             headers=self.auth_headers + [(b"content-type", b"application/json")],
-            body=req_body
+            body=req_body,
         )
         self.assertEqual(status, 400)
         self.assertIn("Voice 'unknown_voice_xyz' not found", body.decode("utf-8"))
 
     async def test_speech_rejects_disabled_language_and_no_fallback(self):
         # 1. Test when neither English nor English (US) is enabled (only Vietnamese & Japanese)
-        self.db.update_setting("voice_languages", {
-            "enabled": True,
-            "languages": ["Vietnamese", "Japanese"],
-        })
+        self.db.update_setting(
+            "voice_languages",
+            {
+                "enabled": True,
+                "languages": ["Vietnamese", "Japanese"],
+            },
+        )
 
         # Calling with Timid Marshmallow (English (US)) -> 400
-        req_us = json.dumps({"input": "Hello", "voice": "Timid Marshmallow"}).encode("utf-8")
+        req_us = json.dumps({"input": "Hello", "voice": "Timid Marshmallow"}).encode(
+            "utf-8"
+        )
         status, _, body = await call_asgi(
-            app, "POST", "/v1/audio/speech",
+            app,
+            "POST",
+            "/v1/audio/speech",
             headers=self.auth_headers + [(b"content-type", b"application/json")],
-            body=req_us
+            body=req_us,
         )
         self.assertEqual(status, 400)
         self.assertIn("not currently enabled in settings", body.decode("utf-8"))
@@ -479,9 +570,11 @@ class TestAudioEndpoints(unittest.IsolatedAsyncioTestCase):
         # Calling with alloy (alias falling back to default English (US) voice) -> 400
         req_alloy = json.dumps({"input": "Hello", "voice": "alloy"}).encode("utf-8")
         status, _, body = await call_asgi(
-            app, "POST", "/v1/audio/speech",
+            app,
+            "POST",
+            "/v1/audio/speech",
             headers=self.auth_headers + [(b"content-type", b"application/json")],
-            body=req_alloy
+            body=req_alloy,
         )
         self.assertEqual(status, 400)
         self.assertIn("not currently enabled in settings", body.decode("utf-8"))
@@ -489,33 +582,42 @@ class TestAudioEndpoints(unittest.IsolatedAsyncioTestCase):
         # Omitting voice (system defaults to English (US) voice) -> 400 (NO FALLBACK)
         req_empty = json.dumps({"input": "Hello"}).encode("utf-8")
         status, _, body = await call_asgi(
-            app, "POST", "/v1/audio/speech",
+            app,
+            "POST",
+            "/v1/audio/speech",
             headers=self.auth_headers + [(b"content-type", b"application/json")],
-            body=req_empty
+            body=req_empty,
         )
         self.assertEqual(status, 400)
         self.assertIn("not currently enabled in settings", body.decode("utf-8"))
 
         # 2. Test when English (UK) is enabled, but English (US) is NOT enabled
-        self.db.update_setting("voice_languages", {
-            "enabled": True,
-            "languages": ["English (UK)", "Vietnamese", "Japanese"],
-        })
+        self.db.update_setting(
+            "voice_languages",
+            {
+                "enabled": True,
+                "languages": ["English (UK)", "Vietnamese", "Japanese"],
+            },
+        )
 
         # Timid Marshmallow belongs to English (US) -> must be rejected even though English (UK) is enabled
         status, _, body = await call_asgi(
-            app, "POST", "/v1/audio/speech",
+            app,
+            "POST",
+            "/v1/audio/speech",
             headers=self.auth_headers + [(b"content-type", b"application/json")],
-            body=req_us
+            body=req_us,
         )
         self.assertEqual(status, 400)
         self.assertIn("not currently enabled in settings", body.decode("utf-8"))
 
         # Omitting voice (defaults to English (US) voice) -> must also be rejected
         status, _, body = await call_asgi(
-            app, "POST", "/v1/audio/speech",
+            app,
+            "POST",
+            "/v1/audio/speech",
             headers=self.auth_headers + [(b"content-type", b"application/json")],
-            body=req_empty
+            body=req_empty,
         )
         self.assertEqual(status, 400)
         self.assertIn("not currently enabled in settings", body.decode("utf-8"))
@@ -543,19 +645,26 @@ class TestAudioEndpoints(unittest.IsolatedAsyncioTestCase):
         }
 
         # Mock pool.ensure_candidate and pool.generate_media
-        with patch.object(self.pool, "ensure_candidate", return_value=[{"id": "acc_test"}]), \
-             patch.object(self.pool, "generate_media", return_value=fake_media_result) as mock_gen:
+        with patch.object(
+            self.pool, "ensure_candidate", return_value=[{"id": "acc_test"}]
+        ), patch.object(
+            self.pool, "generate_media", return_value=fake_media_result
+        ) as mock_gen:
             # 1. Test binary response (response_format="mp3")
-            payload_mp3 = json.dumps({
-                "model": "muse-tts",
-                "input": "Xin chào! [laughs] Thật tuyệt vời.",
-                "voice": "alloy",
-                "instructions": "Be lively",
-                "response_format": "mp3",
-            }).encode("utf-8")
+            payload_mp3 = json.dumps(
+                {
+                    "model": "muse-tts",
+                    "input": "Xin chào! [laughs] Thật tuyệt vời.",
+                    "voice": "alloy",
+                    "instructions": "Be lively",
+                    "response_format": "mp3",
+                }
+            ).encode("utf-8")
 
             status, headers, body = await call_asgi(
-                app, "POST", "/v1/audio/speech",
+                app,
+                "POST",
+                "/v1/audio/speech",
                 headers=self.auth_headers + [(b"content-type", b"application/json")],
                 body=payload_mp3,
             )
@@ -569,7 +678,9 @@ class TestAudioEndpoints(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(call_args.args[1], "audio")
             self.assertEqual(call_args.kwargs.get("skip_system_prompt"), True)
             sent_prompt = call_args.args[0]
-            self.assertIn('using voice "avocado_v2:vdc_NOID25" (Timid Marshmallow)', sent_prompt)
+            self.assertIn(
+                'using voice "avocado_v2:vdc_NOID25" (Timid Marshmallow)', sent_prompt
+            )
             self.assertIn("Style / delivery instructions: Be lively", sent_prompt)
             self.assertIn("Xin chào! [laughs] Thật tuyệt vời.", sent_prompt)
 
@@ -582,15 +693,19 @@ class TestAudioEndpoints(unittest.IsolatedAsyncioTestCase):
 
             # 2. Test JSON/URL response (response_format="url")
             mock_gen.reset_mock()
-            payload_url = json.dumps({
-                "model": "tts-1",
-                "input": "Testing url format",
-                "voice": "avocado_v2:vdc_NOID25",
-                "response_format": "url",
-            }).encode("utf-8")
+            payload_url = json.dumps(
+                {
+                    "model": "tts-1",
+                    "input": "Testing url format",
+                    "voice": "avocado_v2:vdc_NOID25",
+                    "response_format": "url",
+                }
+            ).encode("utf-8")
 
             status, headers, body = await call_asgi(
-                app, "POST", "/v1/audio/speech",
+                app,
+                "POST",
+                "/v1/audio/speech",
                 headers=self.auth_headers + [(b"content-type", b"application/json")],
                 body=payload_url,
             )
@@ -618,7 +733,9 @@ class TestAudioEndpoints(unittest.IsolatedAsyncioTestCase):
                 "chat_events": [
                     {
                         "resources": ["not-a-dict"],
-                        "payload": json.dumps({"data": {"audio": "sandbox:///tmp/speech_out.mp3"}}),
+                        "payload": json.dumps(
+                            {"data": {"audio": "sandbox:///tmp/speech_out.mp3"}}
+                        ),
                     }
                 ]
             }

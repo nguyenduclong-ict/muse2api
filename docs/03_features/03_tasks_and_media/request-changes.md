@@ -11,7 +11,7 @@
   - `02_basic_design/02_database/erd.md`: bổ sung cột `input_request_json` vào bảng `TASKS`.
   - `02_basic_design/01_api_overview.md`: bổ sung `GET /admin/tasks/{id}`.
 - **Quyết định:** Lưu JSON đầy đủ tham số cho cả 5 nguồn tạo task (`chat`, `image`, `video`, `audio`, `voice_preview`), thay thế dữ liệu base64/binary lớn bằng metadata tóm tắt, giới hạn `32 KB`, và tách payload chi tiết qua `GET /admin/tasks/{id}` để không làm chậm `GET /admin/tasks`.
-- **Task:** `chưa tạo`
+- **Task:** [T-017](../../04_tasks/017_task_input_request_storage/plan.md)
 
 ## 2026-11-19 — Hỗ trợ bộ lọc Task `audio` và trình phát Audio Preview
 

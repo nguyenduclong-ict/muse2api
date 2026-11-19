@@ -1,4 +1,5 @@
 """Voice preview cache and generation service."""
+
 from __future__ import annotations
 
 import logging
@@ -36,7 +37,9 @@ SAMPLE_TEXTS: dict[str, str] = {
     "Arabic": "مرحباً، هذه عينة صوتية قصيرة لتتمكن من سماع نبرة وجودة الصوت.",
 }
 
-DEFAULT_SAMPLE_TEXT = "Hello! This is a quick voice preview so you can hear how I sound."
+DEFAULT_SAMPLE_TEXT = (
+    "Hello! This is a quick voice preview so you can hear how I sound."
+)
 
 
 def safe_preview_filename(voice_id: str, language_group: str | None = None) -> str:
@@ -74,6 +77,7 @@ def build_speech_prompt(
     header_lines = [
         f'Generate an MP3 audio speech file using voice "{voice_id}" ({voice_name}).',
         f"Language: {lang}. Speed: {speed_pct}.",
+        "Audio output: normalize to -16 LUFS, true peak max -1.5 dB, do not clip.",
     ]
     if instructions and instructions.strip():
         header_lines.append(f"Style / delivery instructions: {instructions.strip()}")
@@ -108,7 +112,7 @@ def build_speech_prompt(
     )
 
     speak_block = (
-        "Then speak this text, with the converted sounds in place:\n"
+        "Then speak this text with the converted sounds in place, don't ask any more questions:\n"
         f'"{text}"'
     )
 
@@ -126,13 +130,19 @@ class VoicePreviewService:
         self._locks_guard = threading.Lock()
         os.makedirs(self.cfg.voice_preview_dir, exist_ok=True)
 
-    def _cache_lang_suffix(self, voice_id: str, language_group: str | None) -> str | None:
+    def _cache_lang_suffix(
+        self, voice_id: str, language_group: str | None
+    ) -> str | None:
         if language_group and has_multiple_language_groups(voice_id):
             return language_group
         return None
 
-    def get_preview_filename(self, voice_id: str, language_group: str | None = None) -> str:
-        return safe_preview_filename(voice_id, self._cache_lang_suffix(voice_id, language_group))
+    def get_preview_filename(
+        self, voice_id: str, language_group: str | None = None
+    ) -> str:
+        return safe_preview_filename(
+            voice_id, self._cache_lang_suffix(voice_id, language_group)
+        )
 
     def get_preview_path(self, voice_id: str, language_group: str | None = None) -> str:
         return os.path.join(
@@ -192,7 +202,9 @@ class VoicePreviewService:
                 deleted_any = True
             except OSError:
                 pass
-        if has_multiple_language_groups(voice_id) and os.path.isdir(self.cfg.voice_preview_dir):
+        if has_multiple_language_groups(voice_id) and os.path.isdir(
+            self.cfg.voice_preview_dir
+        ):
             prefix = safe_preview_filename(voice_id)[:-4] + "__"
             for name in os.listdir(self.cfg.voice_preview_dir):
                 if name.startswith(prefix) and name.endswith(".mp3"):
@@ -239,7 +251,11 @@ class VoicePreviewService:
 
         with vlock:
             # Double check inside lock
-            if not refresh and os.path.isfile(dst_path) and os.path.getsize(dst_path) > 0:
+            if (
+                not refresh
+                and os.path.isfile(dst_path)
+                and os.path.getsize(dst_path) > 0
+            ):
                 return {
                     "voice_id": voice_id,
                     "voice_name": voice_name,
@@ -262,6 +278,13 @@ class VoicePreviewService:
                 status="running",
                 model="muse-tts",
                 prompt_preview=prompt_preview,
+                input_request={
+                    "source": "voice_preview",
+                    "voice_id": voice_id,
+                    "voice_name": voice_name,
+                    "language": lang_group,
+                    "sample_text": sample_text,
+                },
             )
             t0 = time.time()
 

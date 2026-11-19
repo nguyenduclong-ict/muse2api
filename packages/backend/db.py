@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import secrets
 import sqlite3
 import threading
@@ -10,6 +11,87 @@ import time
 from typing import Any
 
 from config import Config, DEFAULT_SYSTEM_PROMPT
+
+MAX_INPUT_REQUEST_BYTES = 32 * 1024
+_TRUNCATED_SUFFIX = "... [truncated]"
+_DATA_URI_RE = re.compile(r"^data:([^;]+);base64,(.+)$", re.DOTALL)
+_RAW_B64_RE = re.compile(r"^[A-Za-z0-9+/=]{512,}$")
+_BASE64_KEY_HINTS = frozenset({"b64_json", "image", "image_base64", "file", "data"})
+
+
+def _sanitize_input_value(val: Any, key_hint: str = "") -> Any:
+    """Recursively sanitize binary/base64 payloads into compact metadata strings."""
+    if isinstance(val, dict):
+        return {str(k): _sanitize_input_value(v, str(k)) for k, v in val.items()}
+    if isinstance(val, (list, tuple)):
+        return [_sanitize_input_value(item, key_hint) for item in val]
+    if isinstance(val, (bytes, bytearray)):
+        return f"[binary {len(val)} bytes]"
+    if isinstance(val, str):
+        stripped = val.strip()
+        m = _DATA_URI_RE.match(stripped)
+        if m:
+            mime, b64_part = m.group(1), m.group(2)
+            kb = max(1, round(len(b64_part) * 3 / 4 / 1024))
+            return f"[base64 {mime} ~{kb}KB]"
+        if len(stripped) >= 512 and key_hint.lower() in _BASE64_KEY_HINTS and _RAW_B64_RE.match(stripped):
+            kb = max(1, round(len(stripped) * 3 / 4 / 1024))
+            return f"[base64 ~{kb}KB]"
+        return val
+    if isinstance(val, (int, float, bool)) or val is None:
+        return val
+    return str(val)
+
+
+def _find_longest_str(node: Any) -> tuple[Any, Any, str] | None:
+    """Return (container, key_or_index, string_value) for the longest string in node."""
+    best: tuple[Any, Any, str] | None = None
+    best_len = 0
+
+    def walk(cur: Any) -> None:
+        nonlocal best, best_len
+        if isinstance(cur, dict):
+            for k, v in cur.items():
+                if isinstance(v, str):
+                    if len(v) > best_len:
+                        best = (cur, k, v)
+                        best_len = len(v)
+                elif isinstance(v, (dict, list)):
+                    walk(v)
+        elif isinstance(cur, list):
+            for idx, v in enumerate(cur):
+                if isinstance(v, str):
+                    if len(v) > best_len:
+                        best = (cur, idx, v)
+                        best_len = len(v)
+                elif isinstance(v, (dict, list)):
+                    walk(v)
+
+    walk(node)
+    return best
+
+
+def serialize_input_request(payload: Any, max_bytes: int = MAX_INPUT_REQUEST_BYTES) -> str:
+    """Sanitize and serialize task input request JSON, capping at max_bytes UTF-8."""
+    if payload is None or payload == "":
+        return ""
+    data = _sanitize_input_value(payload)
+    raw = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+    while len(raw.encode("utf-8")) > max_bytes:
+        longest = _find_longest_str(data)
+        if not longest:
+            break
+        container, key, text = longest
+        base = text[:-len(_TRUNCATED_SUFFIX)] if text.endswith(_TRUNCATED_SUFFIX) else text
+        if len(base) <= 16:
+            break
+        new_len = max(16, len(base) // 2)
+        container[key] = base[:new_len] + _TRUNCATED_SUFFIX
+        raw = json.dumps(data, ensure_ascii=False, separators=(",", ":"))
+    if len(raw.encode("utf-8")) > max_bytes:
+        raw_preview = raw.encode("utf-8")[: max(64, max_bytes - 64)].decode("utf-8", errors="ignore")
+        raw = json.dumps({"_truncated": True, "preview": raw_preview + _TRUNCATED_SUFFIX}, ensure_ascii=False, separators=(",", ":"))
+    return raw
 
 SUPPORTED_MODEL_TYPES: tuple[str, ...] = ("chat", "image", "video", "speech")
 _SUPPORTED_MODEL_SET: frozenset[str] = frozenset(SUPPORTED_MODEL_TYPES)
@@ -134,6 +216,7 @@ class Database:
                         account_id TEXT DEFAULT '',
                         model TEXT DEFAULT '',
                         prompt_preview TEXT DEFAULT '',
+                        input_request_json TEXT DEFAULT '',
                         session_id TEXT DEFAULT '',
                         media_filename TEXT DEFAULT '',
                         error_message TEXT DEFAULT '',
@@ -164,6 +247,9 @@ class Database:
                     conn.execute(
                         "ALTER TABLE accounts ADD COLUMN supported_models_json TEXT NOT NULL DEFAULT '[\"chat\",\"image\",\"video\",\"speech\"]'"
                     )
+                task_cols = {r["name"] for r in conn.execute("PRAGMA table_info(tasks)").fetchall()}
+                if "input_request_json" not in task_cols:
+                    conn.execute("ALTER TABLE tasks ADD COLUMN input_request_json TEXT DEFAULT ''")
                 now = time.time()
                 row = conn.execute("SELECT raw_key FROM api_keys WHERE id = 1").fetchone()
                 if not row:
@@ -465,17 +551,19 @@ class Database:
 
     # --- Tasks ---
     def create_task(self, task_id: str, task_type: str, status: str = "queued",
-                    account_id: str = "", model: str = "", prompt_preview: str = "") -> dict[str, Any]:
+                    account_id: str = "", model: str = "", prompt_preview: str = "",
+                    input_request: Any = None) -> dict[str, Any]:
         now = time.time()
+        input_request_json = serialize_input_request(input_request) if input_request is not None else ""
         with self._lock:
             conn = self._connect()
             try:
                 conn.execute(
                     """
-                    INSERT INTO tasks (id, type, status, account_id, model, prompt_preview, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO tasks (id, type, status, account_id, model, prompt_preview, input_request_json, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (task_id, task_type, status, account_id, model, prompt_preview[:200], now, now),
+                    (task_id, task_type, status, account_id, model, prompt_preview[:200], input_request_json, now, now),
                 )
                 conn.commit()
                 return dict(conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone())
@@ -504,8 +592,23 @@ class Database:
         with self._lock:
             conn = self._connect()
             try:
-                row = conn.execute("SELECT * FROM tasks WHERE id = ?", (task_id,)).fetchone()
-                return dict(row) if row else None
+                row = conn.execute(
+                    "SELECT t.*, a.label as account_label FROM tasks t "
+                    "LEFT JOIN accounts a ON t.account_id = a.id WHERE t.id = ?",
+                    (task_id,),
+                ).fetchone()
+                if not row:
+                    return None
+                d = dict(row)
+                raw = d.get("input_request_json") or ""
+                if raw:
+                    try:
+                        d["input_request"] = json.loads(raw)
+                    except json.JSONDecodeError:
+                        d["input_request"] = {"raw": raw}
+                else:
+                    d["input_request"] = None
+                return d
             finally:
                 conn.close()
 
@@ -560,7 +663,9 @@ class Database:
             conn = self._connect()
             try:
                 rows = conn.execute(
-                    f"SELECT t.*, a.label as account_label FROM tasks t "
+                    "SELECT t.id, t.type, t.status, t.account_id, t.model, t.prompt_preview, "
+                    "t.session_id, t.media_filename, t.error_message, t.latency_ms, "
+                    "t.created_at, t.updated_at, a.label as account_label FROM tasks t "
                     f"LEFT JOIN accounts a ON t.account_id = a.id {where} "
                     f"ORDER BY t.created_at DESC LIMIT ? OFFSET ?",
                     params,

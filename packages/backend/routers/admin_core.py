@@ -96,6 +96,14 @@ def list_tasks(request: Request, type: str = "", status: str = "", page: int = 1
     }
 
 
+@router.get("/tasks/{task_id}")
+def get_task_detail(task_id: str, request: Request):
+    task = request.app.state.db.get_task(task_id)
+    if not task:
+        raise HTTPException(status_code=404, detail="Task not found")
+    return task
+
+
 def _remove_media_files(cfg, filenames: list[str]) -> int:
     removed = 0
     for fn in filenames:

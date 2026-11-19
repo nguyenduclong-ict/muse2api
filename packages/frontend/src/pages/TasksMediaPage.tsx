@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronLeft, ChevronRight, Download, ExternalLink, Eye, Music, Trash2, X } from "lucide-react";
+import { Check, ChevronLeft, ChevronRight, Copy, Download, ExternalLink, Eye, Music, Trash2, X } from "lucide-react";
 import { Badge, Button, Card, CardContent, CardHeader, CardTitle, Checkbox } from "../components/ui";
 import { useToast } from "../components/Toast";
 import { apiFetch, formatBytes, formatTimeAgo } from "../lib/api";
@@ -17,6 +17,11 @@ interface TaskItem {
   error_message: string;
   latency_ms: number;
   created_at: number;
+}
+
+interface TaskDetail extends TaskItem {
+  input_request?: unknown;
+  input_request_json?: string;
 }
 
 interface MediaItem {
@@ -103,15 +108,26 @@ export function TasksMediaPage() {
   const [deletingTaskId, setDeletingTaskId] = useState<string | null>(null);
   const [deletingMediaName, setDeletingMediaName] = useState<string | null>(null);
   const [previewMedia, setPreviewMedia] = useState<MediaItem | null>(null);
+  const [selectedTaskId, setSelectedTaskId] = useState<string | null>(null);
+  const [copiedInputJson, setCopiedInputJson] = useState(false);
 
   useEffect(() => {
-    if (!previewMedia) return;
+    if (!previewMedia && !selectedTaskId) return;
     const onKeyDown = (e: KeyboardEvent) => {
-      if (e.key === "Escape") setPreviewMedia(null);
+      if (e.key === "Escape") {
+        setPreviewMedia(null);
+        setSelectedTaskId(null);
+      }
     };
     window.addEventListener("keydown", onKeyDown);
     return () => window.removeEventListener("keydown", onKeyDown);
-  }, [previewMedia]);
+  }, [previewMedia, selectedTaskId]);
+
+  const { data: taskDetail, isLoading: isLoadingTaskDetail } = useQuery({
+    queryKey: ["task-detail", selectedTaskId],
+    queryFn: () => apiFetch<TaskDetail>(`/admin/tasks/${encodeURIComponent(selectedTaskId!)}`),
+    enabled: Boolean(selectedTaskId),
+  });
 
   const { data: tasksData } = useQuery({
     queryKey: ["tasks", typeFilter, statusFilter, tasksPage, tasksPageSize],
@@ -334,15 +350,28 @@ export function TasksMediaPage() {
                           )}
                         </td>
                         <td className="py-2.5 text-right">
-                          <Button
-                            size="sm"
-                            variant="danger"
-                            loading={deletingTaskId === t.id}
-                            disabled={t.status === "running"}
-                            onClick={() => deleteTaskMut.mutate(t.id)}
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </Button>
+                          <div className="inline-flex items-center gap-1.5">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              title="View Task Detail"
+                              onClick={() => {
+                                setCopiedInputJson(false);
+                                setSelectedTaskId(t.id);
+                              }}
+                            >
+                              <Eye className="h-3.5 w-3.5" />
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="danger"
+                              loading={deletingTaskId === t.id}
+                              disabled={t.status === "running"}
+                              onClick={() => deleteTaskMut.mutate(t.id)}
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </Button>
+                          </div>
                         </td>
                       </tr>
                     ))}
@@ -556,6 +585,95 @@ export function TasksMediaPage() {
                   alt={previewMedia.filename}
                   className="max-h-[75vh] max-w-full rounded object-contain"
                 />
+              )}
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {selectedTaskId && (
+        <div
+          className="fixed inset-0 z-50 flex items-center justify-center bg-black/80 p-4 backdrop-blur-sm"
+          onClick={() => setSelectedTaskId(null)}
+        >
+          <Card
+            className="w-full max-w-3xl overflow-hidden border-zinc-700 bg-zinc-900 shadow-2xl"
+            onClick={(e) => e.stopPropagation()}
+          >
+            <CardHeader className="flex flex-row items-center justify-between gap-3 border-b border-zinc-800 py-3">
+              <div className="min-w-0">
+                <CardTitle className="truncate font-mono text-sm text-zinc-100">
+                  Task Detail · {selectedTaskId}
+                </CardTitle>
+                {taskDetail && (
+                  <p className="mt-0.5 text-xs text-zinc-400">
+                    <span className="capitalize">{taskDetail.type}</span> · {taskDetail.model || "-"} ·{" "}
+                    {taskDetail.account_label || taskDetail.account_id || "-"} ·{" "}
+                    {taskDetail.latency_ms ? `${(taskDetail.latency_ms / 1000).toFixed(1)}s` : "-"}
+                  </p>
+                )}
+              </div>
+              <div className="flex items-center gap-2 shrink-0">
+                {taskDetail?.input_request !== null && taskDetail?.input_request !== undefined && (
+                  <Button
+                    size="sm"
+                    variant="outline"
+                    onClick={async () => {
+                      const text = JSON.stringify(taskDetail.input_request, null, 2);
+                      await navigator.clipboard.writeText(text);
+                      setCopiedInputJson(true);
+                      toast.success("Copied input request JSON.");
+                      setTimeout(() => setCopiedInputJson(false), 1800);
+                    }}
+                  >
+                    {copiedInputJson ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
+                    {copiedInputJson ? "Copied" : "Copy JSON"}
+                  </Button>
+                )}
+                <Button size="sm" variant="ghost" onClick={() => setSelectedTaskId(null)} title="Close">
+                  <X className="h-4 w-4" />
+                </Button>
+              </div>
+            </CardHeader>
+            <CardContent className="max-h-[75vh] space-y-4 overflow-y-auto bg-zinc-950 p-4">
+              {isLoadingTaskDetail ? (
+                <div className="py-8 text-center text-sm text-zinc-400">Loading task details...</div>
+              ) : !taskDetail ? (
+                <div className="py-8 text-center text-sm text-rose-400">Failed to load task details.</div>
+              ) : (
+                <>
+                  {taskDetail.error_message && (
+                    <div className="rounded-lg border border-rose-500/30 bg-rose-500/10 p-3 text-xs text-rose-300">
+                      <span className="font-semibold">Error:</span> {taskDetail.error_message}
+                    </div>
+                  )}
+                  <div>
+                    <div className="mb-1.5 flex items-center justify-between text-xs font-medium text-zinc-400">
+                      <span>Input Request</span>
+                      <Badge
+                        variant={
+                          taskDetail.status === "completed"
+                            ? "success"
+                            : taskDetail.status === "failed"
+                            ? "danger"
+                            : "warning"
+                        }
+                      >
+                        {taskDetail.status}
+                      </Badge>
+                    </div>
+                    {taskDetail.input_request !== null && taskDetail.input_request !== undefined ? (
+                      <pre className="max-h-[52vh] overflow-auto rounded-lg border border-zinc-800 bg-zinc-900/90 p-3 font-mono text-xs text-zinc-200">
+                        {JSON.stringify(taskDetail.input_request, null, 2)}
+                      </pre>
+                    ) : (
+                      <div className="rounded-lg border border-zinc-800 bg-zinc-900/50 p-4 text-xs text-zinc-500">
+                        No input request recorded for this task.
+                        {taskDetail.prompt_preview ? ` Preview: ${taskDetail.prompt_preview}` : ""}
+                      </div>
+                    )}
+                  </div>
+                </>
               )}
             </CardContent>
           </Card>

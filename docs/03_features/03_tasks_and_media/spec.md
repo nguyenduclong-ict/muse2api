@@ -1,6 +1,6 @@
 # Feature Spec: Tasks & Media Management
 
-- **Trạng thái:** `Ready for Implementation`
+- **Trạng thái:** `Implemented (Production)`
 - **Liên quan:** [ERD](../../02_basic_design/02_database/erd.md), [Screens Overview](../../02_basic_design/03_screens_overview.md)
 
 ## 1. Mục tiêu & Bối cảnh

@@ -253,7 +253,14 @@ def chat_completions(body: ChatCompletionReq, request: Request):
     timeout = float(body.timeout or 180)
 
     task_id = f"tsk_{secrets.token_hex(6)}"
-    db.create_task(task_id, "chat", status="running", model=body.model, prompt_preview=prompt)
+    db.create_task(
+        task_id,
+        "chat",
+        status="running",
+        model=body.model,
+        prompt_preview=prompt,
+        input_request=body.model_dump(exclude_none=True),
+    )
     t0 = time.time()
 
     if body.stream:
@@ -319,7 +326,14 @@ def responses_endpoint(body: ResponsesReq, request: Request):
     timeout = float(body.timeout or 180)
 
     task_id = f"tsk_{secrets.token_hex(6)}"
-    db.create_task(task_id, "chat", status="running", model=body.model, prompt_preview=prompt)
+    db.create_task(
+        task_id,
+        "chat",
+        status="running",
+        model=body.model,
+        prompt_preview=prompt,
+        input_request=body.model_dump(exclude_none=True),
+    )
     t0 = time.time()
 
     if body.stream:
@@ -385,13 +399,14 @@ def images_generations(body: ImageGenReq, request: Request):
     prompt = _build_media_prompt("image", body.prompt, ratio, extra=body.extra, has_refs=bool(refs))
     timeout = float(body.timeout or 300)
     task_id = f"img_{secrets.token_hex(6)}"
+    input_payload = body.model_dump(by_alias=True, exclude_none=True)
 
     if body.async_:
-        db.create_task(task_id, "image", status="queued", model=body.model, prompt_preview=body.prompt)
+        db.create_task(task_id, "image", status="queued", model=body.model, prompt_preview=body.prompt, input_request=input_payload)
         threading.Thread(target=_run_async_media, args=(db, pool, task_id, prompt, "image", refs, timeout), daemon=True).start()
         return {"id": task_id, "status": "queued", "progress": 10}
 
-    db.create_task(task_id, "image", status="running", model=body.model, prompt_preview=body.prompt)
+    db.create_task(task_id, "image", status="running", model=body.model, prompt_preview=body.prompt, input_request=input_payload)
     t0 = time.time()
     try:
         res = pool.generate_media(
@@ -445,7 +460,9 @@ async def images_edits(request: Request):
     async_flag = False
     timeout = 300.0
     img_tuples: list[tuple[bytes, str]] = []
+    uploaded_files_meta: list[dict[str, Any]] = []
     raw_refs: list[Any] = []
+    json_body: dict[str, Any] | None = None
 
     if "multipart/form-data" in ct:
         form = await request.form()
@@ -467,6 +484,12 @@ async def images_edits(request: Request):
                     mime = getattr(item, "content_type", None) or "image/png"
                     if data:
                         img_tuples.append((data, mime))
+                        uploaded_files_meta.append({
+                            "field": field_name,
+                            "filename": getattr(item, "filename", None) or "upload",
+                            "content_type": mime,
+                            "size_bytes": len(data),
+                        })
                 elif isinstance(item, str) and item.strip():
                     raw_refs.append(item)
     else:
@@ -474,6 +497,7 @@ async def images_edits(request: Request):
             body = await request.json()
         except Exception:
             raise HTTPException(status_code=400, detail={"error": {"message": "Invalid JSON or multipart body"}})
+        json_body = body
         prompt = str(body.get("prompt") or "").strip()
         model = str(body.get("model") or "muse-image")
         ratio = str(body.get("aspect_ratio") or body.get("size") or "16:9")
@@ -494,13 +518,28 @@ async def images_edits(request: Request):
 
     full_prompt = _build_media_prompt("image", prompt, ratio, extra=extra, has_refs=True)
     task_id = f"img_{secrets.token_hex(6)}"
+    input_payload = (
+        json_body
+        if json_body is not None
+        else {
+            "prompt": prompt,
+            "model": model,
+            "aspect_ratio": ratio,
+            "extra": extra,
+            "response_format": response_format,
+            "async": async_flag,
+            "timeout": timeout,
+            "files": uploaded_files_meta,
+            "refs": raw_refs,
+        }
+    )
 
     if async_flag:
-        db.create_task(task_id, "image", status="queued", model=model, prompt_preview=prompt)
+        db.create_task(task_id, "image", status="queued", model=model, prompt_preview=prompt, input_request=input_payload)
         threading.Thread(target=_run_async_media, args=(db, pool, task_id, full_prompt, "image", img_tuples, timeout), daemon=True).start()
         return {"id": task_id, "status": "queued", "progress": 10}
 
-    db.create_task(task_id, "image", status="running", model=model, prompt_preview=prompt)
+    db.create_task(task_id, "image", status="running", model=model, prompt_preview=prompt, input_request=input_payload)
     t0 = time.time()
     try:
         res = await run_in_threadpool(
@@ -564,7 +603,14 @@ def create_image_task(
     timeout = float(body.timeout or 300)
 
     task_id = f"img_{secrets.token_hex(6)}"
-    db.create_task(task_id, "image", status="queued", model=body.model, prompt_preview=body.prompt)
+    db.create_task(
+        task_id,
+        "image",
+        status="queued",
+        model=body.model,
+        prompt_preview=body.prompt,
+        input_request=body.model_dump(by_alias=True, exclude_none=True),
+    )
     if idempotency_key:
         with _IDEMPOTENCY_LOCK:
             _IDEMPOTENCY_MAP[idempotency_key] = task_id
@@ -606,7 +652,14 @@ def create_video_task(body: VideoGenReq, request: Request):
     )
     timeout = float(body.timeout or 360)
     task_id = f"vid_{secrets.token_hex(6)}"
-    db.create_task(task_id, "video", status="queued", model=body.model, prompt_preview=body.prompt)
+    db.create_task(
+        task_id,
+        "video",
+        status="queued",
+        model=body.model,
+        prompt_preview=body.prompt,
+        input_request=body.model_dump(exclude_none=True),
+    )
     threading.Thread(target=_run_async_media, args=(db, pool, task_id, prompt, "video", refs, timeout), daemon=True).start()
     return {"id": task_id, "status": "queued", "progress": 10}
 
@@ -817,7 +870,14 @@ async def create_speech(body: SpeechReq, request: Request):
     )
     timeout = float(body.timeout or 180)
     task_id = f"aud_{secrets.token_hex(6)}"
-    db.create_task(task_id, "audio", status="running", model=body.model, prompt_preview=text[:200])
+    db.create_task(
+        task_id,
+        "audio",
+        status="running",
+        model=body.model,
+        prompt_preview=text[:200],
+        input_request=body.model_dump(exclude_none=True),
+    )
     t0 = time.time()
 
     try:
