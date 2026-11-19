@@ -383,7 +383,7 @@ class TestCapabilityRoutingAndFailFast503(unittest.TestCase):
                     return 200, b"FAKE_BINARY_PAYLOAD"
                 return 200, b"{}"
 
-            def stream_rpc(self, method, path, payload=None, timeout=30.0):
+            def stream_rpc(self, method, path, payload=None, timeout=30.0, idle_timeout=None):
                 yield 200, json.dumps({"event": "task.status", "payload": {"status": "completed"}}).encode()
 
         def fake_get_client(aid: str):
@@ -401,10 +401,28 @@ class TestCapabilityRoutingAndFailFast503(unittest.TestCase):
             res_aud = self.pool.generate_media("say hi", expect_kind="audio", skip_system_prompt=True)
             self.assertEqual(res_aud["account_id"], "acc_a")
 
-            res_vid = self.pool.generate_media("animate cat", expect_kind="video")
+            selected_events: list[tuple[str, str]] = []
+            res_vid = self.pool.generate_media(
+                "animate cat",
+                expect_kind="video",
+                on_account_selected=lambda aid, sid: selected_events.append((aid, sid)),
+            )
             self.assertEqual(res_vid["account_id"], "acc_b")
+            self.assertEqual(len(selected_events), 1)
+            self.assertEqual(selected_events[0][0], "acc_b")
+            self.assertTrue(bool(selected_events[0][1]))
 
         self.assertEqual(chosen_ids, ["acc_a", "acc_a", "acc_a", "acc_b"])
+
+        # Verify orphaned queued/running tasks are marked failed on startup cleanup
+        self.db.create_task("vid_orphan_1", "video", status="running", model="muse-video")
+        self.db.create_task("vid_orphan_2", "video", status="queued", model="muse-video")
+        self.db.create_task("vid_done_1", "video", status="completed", model="muse-video")
+        cleaned = self.db.fail_orphaned_tasks()
+        self.assertEqual(cleaned, 2)
+        self.assertEqual(self.db.get_task("vid_orphan_1")["status"], "failed")
+        self.assertEqual(self.db.get_task("vid_orphan_2")["status"], "failed")
+        self.assertEqual(self.db.get_task("vid_done_1")["status"], "completed")
 
     def test_v1_endpoints_fail_fast_503_without_creating_orphan_tasks(self):
         # Disable acc_b so NO account supports 'video'

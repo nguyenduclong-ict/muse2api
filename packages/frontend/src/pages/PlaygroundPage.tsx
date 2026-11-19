@@ -783,19 +783,26 @@ export function PlaygroundPage() {
     return filteredVoices.slice(start, start + pageSize);
   }, [filteredVoices, voicePage]);
 
+  const getVoiceRowKey = (voice: VoiceItem) =>
+    `${voice.id}::${voice.language_group || voice.accent}`;
+
   // Play voice preview handler
   const handlePlayPreview = async (voice: VoiceItem) => {
+    const rowKey = getVoiceRowKey(voice);
     if (previewAudioRef.current) {
       previewAudioRef.current.pause();
     }
-    if (playingVoiceId === voice.id) {
+    if (playingVoiceId === rowKey) {
       setPlayingVoiceId(null);
       return;
     }
 
-    setPreviewLoadingId(voice.id);
+    setPreviewLoadingId(rowKey);
     try {
-      const url = `${baseUrl}/audio/voices/${encodeURIComponent(voice.id)}/preview`;
+      const langParam = voice.language_group
+        ? `?language=${encodeURIComponent(voice.language_group)}`
+        : "";
+      const url = `${baseUrl}/audio/voices/${encodeURIComponent(voice.id)}/preview${langParam}`;
       const res = await fetch(url, {
         headers: { Authorization: `Bearer ${rawKey}` },
       });
@@ -811,7 +818,7 @@ export function PlaygroundPage() {
       const audioUrl = URL.createObjectURL(blob);
       const audio = new Audio(audioUrl);
       previewAudioRef.current = audio;
-      setPlayingVoiceId(voice.id);
+      setPlayingVoiceId(rowKey);
 
       audio.onended = () => {
         setPlayingVoiceId(null);
@@ -1619,11 +1626,12 @@ export function PlaygroundPage() {
                         </tr>
                       ) : (
                         pageVoices.map((v) => {
-                          const isPlaying = playingVoiceId === v.id;
-                          const isLoading = previewLoadingId === v.id;
+                          const rowKey = getVoiceRowKey(v);
+                          const isPlaying = playingVoiceId === rowKey;
+                          const isLoading = previewLoadingId === rowKey;
                           return (
                             <tr
-                              key={v.id}
+                              key={rowKey}
                               className="hover:bg-zinc-900/50 transition-colors"
                             >
                               <td className="py-2.5 px-3">

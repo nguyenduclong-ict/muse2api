@@ -399,30 +399,52 @@ class WSSPool:
     def generate_media(self, prompt: str, expect_kind: str = "image",
                        images: list[tuple[bytes, str]] | None = None,
                        timeout: float = 300.0,
-                       skip_system_prompt: bool = False) -> dict[str, Any]:
+                       skip_system_prompt: bool = False,
+                       idle_timeout: float | None = None,
+                       on_account_selected: Any = None) -> dict[str, Any]:
         """Generate or edit image/video/audio via WSS and download binary to data/media/."""
         items = self._build_chat_items(prompt, images, skip_system_prompt=skip_system_prompt)
         capability = _EXPECT_KIND_TO_CAPABILITY.get(expect_kind, expect_kind)
         candidates = self.ensure_candidate(capability)
 
+        total_deadline = time.time() + max(10.0, float(timeout))
+        default_idle = 180.0 if expect_kind == "video" else 120.0
+        effective_idle = float(idle_timeout) if (idle_timeout and idle_timeout > 0) else default_idle
+
         last_err: Exception | None = None
         for acc in candidates:
+            remaining = total_deadline - time.time()
+            if remaining <= 5.0:
+                last_err = last_err or TimeoutError(f"Media generation timed out after {int(timeout)}s")
+                break
             aid = acc["id"]
             try:
                 client = self.get_client(aid)
                 self.db.update_account(aid, last_used_at=time.time(), status="healthy", last_error="")
                 session_id = str(uuid.uuid4())
+                if callable(on_account_selected):
+                    try:
+                        on_account_selected(aid, session_id)
+                    except Exception:
+                        pass
                 st, raw = client.request(
                     "POST", "/chat/stream",
                     {"items": items, "session_id": session_id},
-                    timeout=30.0,
+                    timeout=min(30.0, remaining),
                 )
                 if st == 401:
                     raise MuseAuthError("chat.stream returned 401")
                 if st >= 400:
                     raise MuseWSSError(f"chat.stream HTTP {st}: {raw[:200]!r}")
 
-                for _, chunk in client.stream_rpc("POST", "/chat/subscribe", {"session_id": session_id}, timeout=timeout):
+                stream_rem = max(5.0, total_deadline - time.time())
+                stream_idle = min(effective_idle, stream_rem)
+                for _, chunk in client.stream_rpc(
+                    "POST", "/chat/subscribe",
+                    {"session_id": session_id},
+                    timeout=stream_rem,
+                    idle_timeout=stream_idle,
+                ):
                     txt = chunk.decode("utf-8", errors="replace")
                     for line in txt.splitlines():
                         if not line.strip():

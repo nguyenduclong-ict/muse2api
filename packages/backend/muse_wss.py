@@ -661,7 +661,8 @@ class MuseWSSClient:
             self._close_stream(sid)
 
     def stream_rpc(self, verb: str, path: str, body_dict: dict[str, Any] | None = None,
-                   service: int = 0, timeout: float = 180.0) -> Iterator[tuple[int | None, bytes]]:
+                   service: int = 0, timeout: float = 180.0,
+                   idle_timeout: float | None = None) -> Iterator[tuple[int | None, bytes]]:
         body_bytes = json.dumps(body_dict).encode("utf-8") if body_dict is not None else b""
         ct = "application/json" if body_dict is not None else None
         sid, q = self._open_stream(verb, path, body_bytes, ct, service)
@@ -670,8 +671,14 @@ class MuseWSSClient:
             while True:
                 rem = deadline - time.time()
                 if rem <= 0:
-                    raise TimeoutError(f"Stream {verb} {path} timed out")
-                ev = q.get(timeout=rem)
+                    raise TimeoutError(f"Stream {verb} {path} timed out after {int(timeout)}s")
+                wait = min(rem, idle_timeout) if (idle_timeout and idle_timeout > 0) else rem
+                try:
+                    ev = q.get(timeout=wait)
+                except queue.Empty:
+                    if time.time() >= deadline:
+                        raise TimeoutError(f"Stream {verb} {path} timed out after {int(timeout)}s")
+                    raise TimeoutError(f"Stream {verb} {path} idle for {int(idle_timeout)}s with no events")
                 if ev is None:
                     break
                 if ev["kind"] == "response":

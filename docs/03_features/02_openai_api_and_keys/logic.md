@@ -93,14 +93,14 @@ sequenceDiagram
      Language: {language_code}. Speed: {speed_pct}.
      Style / delivery instructions: {instructions}  # chỉ thêm khi instructions không rỗng
 
-     Do NOT read any bracket tags literally. Convert them to spoken sounds or delivery cues first:
-     - [laughs] → "Ha ha ha!"
-     - [chuckles], [giggles] → "He he he!"
-     - [sighs] → "Haa..."
+     Do NOT read any bracket tags literally. Convert them to spoken sounds or delivery cues first (keep sounds lowercase and comma-separated, without exclamation marks, so delivery stays soft and natural):
+     - [laughs] → ", hơ hơ," (vi) / ", haha," (khác)
+     - [chuckles], [giggles] → ", hơ hơ," (vi) / ", heh," (khác)
+     - [clears throat] → ", ừm," (vi) / ", hmm," (khác)
+     - [sneezes] → "Hắt xì!" (vi) / "Achoo!" (khác)
+     - [sighs] → "Haiz..."
      - [gasps] → "Huh!"
      - [coughs] → "Hm hm!"
-     - [sneezes] → "Achoo!" (or "Hắt xì!" in Vietnamese)
-     - [clears throat] → "Hmm!"
      - [pause], [long pause] → "..." (brief / longer pause)
      - [whispers] → read the following words slowly and quietly
      - [shouts] → read faster and louder with emphasis

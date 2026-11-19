@@ -509,6 +509,27 @@ class Database:
             finally:
                 conn.close()
 
+    def fail_orphaned_tasks(self, reason: str = "Server restarted while task was in progress") -> int:
+        """Mark any leftover queued/running tasks as failed on startup."""
+        now = time.time()
+        with self._lock:
+            conn = self._connect()
+            try:
+                cur = conn.execute(
+                    """
+                    UPDATE tasks
+                    SET status = 'failed',
+                        error_message = CASE WHEN error_message = '' THEN ? ELSE error_message END,
+                        updated_at = ?
+                    WHERE status IN ('queued', 'running')
+                    """,
+                    (reason, now),
+                )
+                conn.commit()
+                return cur.rowcount
+            finally:
+                conn.close()
+
     @staticmethod
     def _task_filter_sql(task_type: str = "", status: str = "") -> tuple[str, list[Any]]:
         clauses = []

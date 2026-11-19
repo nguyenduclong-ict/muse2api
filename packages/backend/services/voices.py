@@ -148,7 +148,9 @@ LANGUAGE_GROUP_TO_CODE: dict[str, str] = {
 
 _VOICES_CACHE: list[dict[str, str]] | None = None
 _BY_ID: dict[str, dict[str, str]] = {}
+_BY_ID_LIST: dict[str, list[dict[str, str]]] = {}
 _BY_NAME_LOWER: dict[str, dict[str, str]] = {}
+_BY_NAME_LOWER_LIST: dict[str, list[dict[str, str]]] = {}
 
 
 def _load_voices() -> list[dict[str, str]]:
@@ -167,9 +169,12 @@ def _load_voices() -> list[dict[str, str]]:
         entry = {k: str(item.get(k) or "") for k in _PUBLIC_FIELDS}
         cleaned.append(entry)
         _BY_ID[vid] = entry
+        _BY_ID_LIST.setdefault(vid, []).append(entry)
         name_l = entry["name"].strip().lower()
-        if name_l and name_l not in _BY_NAME_LOWER:
-            _BY_NAME_LOWER[name_l] = entry
+        if name_l:
+            if name_l not in _BY_NAME_LOWER:
+                _BY_NAME_LOWER[name_l] = entry
+            _BY_NAME_LOWER_LIST.setdefault(name_l, []).append(entry)
 
     _VOICES_CACHE = cleaned
     return _VOICES_CACHE
@@ -289,8 +294,42 @@ def list_voices(
     return out
 
 
-def resolve_voice(voice_input: str | None) -> dict[str, str] | None:
-    """Resolve voice by exact id, case-insensitive name, or OpenAI preset alias."""
+def has_multiple_language_groups(voice_id: str) -> bool:
+    """Return True if a voice ID appears in the catalog under more than one language group."""
+    _load_voices()
+    entries = _BY_ID_LIST.get(voice_id.strip(), [])
+    if len(entries) <= 1:
+        return False
+    groups = {get_voice_language_group(v) for v in entries}
+    return len(groups) > 1
+
+
+def _match_voice_language(voice: dict[str, Any], language: str) -> bool:
+    """Return True if a voice entry matches a requested language group, code, or accent."""
+    lang_l = language.strip().lower()
+    if not lang_l:
+        return True
+    group = get_voice_language_group(voice)
+    if group.lower() == lang_l:
+        return True
+    code = LANGUAGE_GROUP_TO_CODE.get(group, "").lower()
+    if code and code == lang_l:
+        return True
+    if lang_l in ("english", "eng") and group in ENGLISH_LANGUAGE_GROUPS:
+        return True
+    if str(voice.get("accent") or "").strip().lower() == lang_l:
+        return True
+    if str(voice.get("language") or "").strip().lower() == lang_l:
+        return True
+    return False
+
+
+def resolve_voice(voice_input: str | None, language: str | None = None) -> dict[str, str] | None:
+    """Resolve voice by exact id, case-insensitive name, or OpenAI preset alias.
+
+    When ``language`` is provided and multiple catalog entries share the same ID or name,
+    prefer the entry whose language group, ISO code, or accent matches ``language``.
+    """
     _load_voices()
     raw = (voice_input or "").strip()
     if not raw:
@@ -298,18 +337,33 @@ def resolve_voice(voice_input: str | None) -> dict[str, str] | None:
             return _BY_ID[DEFAULT_VOICE_ID]
         return _VOICES_CACHE[0] if _VOICES_CACHE else None
 
-    if raw in _BY_ID:
-        return _BY_ID[raw]
+    candidates: list[dict[str, str]] | None = None
+    default_entry: dict[str, str] | None = None
 
-    lowered = raw.lower()
-    if lowered in _BY_NAME_LOWER:
-        return _BY_NAME_LOWER[lowered]
+    if raw in _BY_ID_LIST:
+        candidates = _BY_ID_LIST[raw]
+        default_entry = _BY_ID[raw]
+    else:
+        lowered = raw.lower()
+        if lowered in _BY_NAME_LOWER_LIST:
+            candidates = _BY_NAME_LOWER_LIST[lowered]
+            default_entry = _BY_NAME_LOWER[lowered]
+        else:
+            alias_target = OPENAI_VOICE_ALIASES.get(lowered)
+            if alias_target and alias_target in _BY_ID_LIST:
+                candidates = _BY_ID_LIST[alias_target]
+                default_entry = _BY_ID[alias_target]
+            elif alias_target and _VOICES_CACHE:
+                # Fallback to the first available voice if preset alias target is not in catalog
+                return _VOICES_CACHE[0]
 
-    alias_target = OPENAI_VOICE_ALIASES.get(lowered)
-    if alias_target and alias_target in _BY_ID:
-        return _BY_ID[alias_target]
-    if alias_target and _VOICES_CACHE:
-        # Fallback to the first available voice if preset alias target is not in catalog
-        return _VOICES_CACHE[0]
+    if not candidates:
+        return None
 
-    return None
+    lang_filter = (language or "").strip()
+    if lang_filter:
+        for entry in candidates:
+            if _match_voice_language(entry, lang_filter):
+                return entry
+
+    return default_entry

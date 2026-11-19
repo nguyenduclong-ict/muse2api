@@ -44,6 +44,9 @@ _configure_logging(Config().log_level)
 async def lifespan(app: FastAPI):
     cfg = Config()
     db = Database(cfg)
+    orphaned = db.fail_orphaned_tasks()
+    if orphaned:
+        logging.getLogger(__name__).warning("Marked %d orphaned running/queued task(s) as failed on startup", orphaned)
     wss_pool = WSSPool(cfg, db)
     keepalive = KeepAliveService(cfg, db)
     cleanup = CleanupService(cfg, db)

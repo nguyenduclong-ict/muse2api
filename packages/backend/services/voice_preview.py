@@ -12,7 +12,11 @@ from typing import Any
 
 from config import Config
 from db import Database
-from services.voices import get_voice_language_code, get_voice_language_group
+from services.voices import (
+    get_voice_language_code,
+    get_voice_language_group,
+    has_multiple_language_groups,
+)
 
 logger = logging.getLogger(__name__)
 
@@ -35,9 +39,13 @@ SAMPLE_TEXTS: dict[str, str] = {
 DEFAULT_SAMPLE_TEXT = "Hello! This is a quick voice preview so you can hear how I sound."
 
 
-def safe_preview_filename(voice_id: str) -> str:
-    """Convert arbitrary voice ID into a safe filesystem filename."""
+def safe_preview_filename(voice_id: str, language_group: str | None = None) -> str:
+    """Convert arbitrary voice ID (and optional language group) into a safe filesystem filename."""
     safe = re.sub(r"[^a-zA-Z0-9_-]+", "__", voice_id.strip())
+    if language_group and language_group.strip():
+        safe_lang = re.sub(r"[^a-zA-Z0-9_-]+", "_", language_group.strip()).strip("_")
+        if safe_lang:
+            return f"{safe}__{safe_lang}.mp3"
     return f"{safe}.mp3"
 
 
@@ -70,15 +78,28 @@ def build_speech_prompt(
     if instructions and instructions.strip():
         header_lines.append(f"Style / delivery instructions: {instructions.strip()}")
 
+    if lang.lower() == "vi":
+        lang_sound_rules = (
+            '- [laughs] → ", hơ hơ,"\n'
+            '- [chuckles], [giggles] → ", hơ hơ,"\n'
+            '- [clears throat] → ", ừm,"\n'
+            '- [sneezes] → "Hắt xì!"\n'
+        )
+    else:
+        lang_sound_rules = (
+            '- [laughs] → ", haha,"\n'
+            '- [chuckles], [giggles] → ", heh,"\n'
+            '- [clears throat] → ", hmm,"\n'
+            '- [sneezes] → "Achoo!"\n'
+        )
+
     emotion_guide = (
-        "Do NOT read any bracket tags literally. Convert them to spoken sounds or delivery cues first:\n"
-        '- [laughs] → "Ha ha ha!"\n'
-        '- [chuckles], [giggles] → "He he he!"\n'
-        '- [sighs] → "Haa..."\n'
+        "Do NOT read any bracket tags literally. Convert them to spoken sounds or delivery cues first "
+        "(keep sounds lowercase and comma-separated, without exclamation marks, so delivery stays soft and natural):\n"
+        f"{lang_sound_rules}"
+        '- [sighs] → "Haiz..."\n'
         '- [gasps] → "Huh!"\n'
         '- [coughs] → "Hm hm!"\n'
-        '- [sneezes] → "Achoo!" (or "Hắt xì!" in Vietnamese)\n'
-        '- [clears throat] → "Hmm!"\n'
         '- [pause], [long pause] → "..." (brief / longer pause)\n'
         "- [whispers] → read the following words slowly and quietly\n"
         "- [shouts] → read faster and louder with emphasis\n"
@@ -105,14 +126,22 @@ class VoicePreviewService:
         self._locks_guard = threading.Lock()
         os.makedirs(self.cfg.voice_preview_dir, exist_ok=True)
 
-    def get_preview_filename(self, voice_id: str) -> str:
-        return safe_preview_filename(voice_id)
+    def _cache_lang_suffix(self, voice_id: str, language_group: str | None) -> str | None:
+        if language_group and has_multiple_language_groups(voice_id):
+            return language_group
+        return None
 
-    def get_preview_path(self, voice_id: str) -> str:
-        return os.path.join(self.cfg.voice_preview_dir, self.get_preview_filename(voice_id))
+    def get_preview_filename(self, voice_id: str, language_group: str | None = None) -> str:
+        return safe_preview_filename(voice_id, self._cache_lang_suffix(voice_id, language_group))
 
-    def is_cached(self, voice_id: str) -> bool:
-        p = self.get_preview_path(voice_id)
+    def get_preview_path(self, voice_id: str, language_group: str | None = None) -> str:
+        return os.path.join(
+            self.cfg.voice_preview_dir,
+            self.get_preview_filename(voice_id, language_group),
+        )
+
+    def is_cached(self, voice_id: str, language_group: str | None = None) -> bool:
+        p = self.get_preview_path(voice_id, language_group)
         return os.path.isfile(p) and os.path.getsize(p) > 0
 
     def get_stats(self) -> dict[str, Any]:
@@ -143,16 +172,36 @@ class VoicePreviewService:
                         pass
         return deleted
 
-    def delete_one(self, voice_id: str) -> bool:
-        """Delete preview cache for a specific voice ID."""
-        p = self.get_preview_path(voice_id)
-        if os.path.isfile(p):
+    def delete_one(self, voice_id: str, language_group: str | None = None) -> bool:
+        """Delete preview cache for a specific voice ID (and optional language group)."""
+        if language_group is not None:
+            p = self.get_preview_path(voice_id, language_group)
+            if os.path.isfile(p):
+                try:
+                    os.remove(p)
+                    return True
+                except OSError:
+                    return False
+            return False
+
+        deleted_any = False
+        base_path = self.get_preview_path(voice_id)
+        if os.path.isfile(base_path):
             try:
-                os.remove(p)
-                return True
+                os.remove(base_path)
+                deleted_any = True
             except OSError:
-                return False
-        return False
+                pass
+        if has_multiple_language_groups(voice_id) and os.path.isdir(self.cfg.voice_preview_dir):
+            prefix = safe_preview_filename(voice_id)[:-4] + "__"
+            for name in os.listdir(self.cfg.voice_preview_dir):
+                if name.startswith(prefix) and name.endswith(".mp3"):
+                    try:
+                        os.remove(os.path.join(self.cfg.voice_preview_dir, name))
+                        deleted_any = True
+                    except OSError:
+                        pass
+        return deleted_any
 
     def get_or_generate_preview(
         self,
@@ -165,8 +214,8 @@ class VoicePreviewService:
         voice_name = voice_info.get("name") or voice_id
         lang_group = get_voice_language_group(voice_info)
         sample_text = get_sample_text_for_group(lang_group)
-        filename = self.get_preview_filename(voice_id)
-        dst_path = self.get_preview_path(voice_id)
+        filename = self.get_preview_filename(voice_id, lang_group)
+        dst_path = self.get_preview_path(voice_id, lang_group)
 
         # Fast path: cache hit without lock
         if not refresh and os.path.isfile(dst_path) and os.path.getsize(dst_path) > 0:
@@ -181,11 +230,12 @@ class VoicePreviewService:
                 "bytes": os.path.getsize(dst_path),
             }
 
-        # In-flight lock per voice_id to prevent redundant generation
+        # In-flight lock per cache filename to prevent redundant generation
+        lock_key = filename
         with self._locks_guard:
-            if voice_id not in self._locks:
-                self._locks[voice_id] = threading.Lock()
-            vlock = self._locks[voice_id]
+            if lock_key not in self._locks:
+                self._locks[lock_key] = threading.Lock()
+            vlock = self._locks[lock_key]
 
         with vlock:
             # Double check inside lock

@@ -9,6 +9,7 @@ import secrets
 import threading
 import time
 from typing import Any
+from urllib.parse import quote
 
 from fastapi import APIRouter, Depends, Header, HTTPException, Request
 from fastapi.concurrency import run_in_threadpool
@@ -21,6 +22,7 @@ from services.voice_preview import build_speech_prompt as _build_speech_prompt
 from services.voices import (
     get_voice_language_code,
     get_voice_language_group,
+    has_multiple_language_groups,
     is_voice_allowed,
     list_voices,
     normalize_voice_languages,
@@ -204,7 +206,13 @@ def _run_async_media(db, pool, task_id: str, prompt: str, expect_kind: str,
     t0 = time.time()
     db.update_task(task_id, status="running")
     try:
-        res = pool.generate_media(prompt, expect_kind=expect_kind, images=refs, timeout=timeout)
+        res = pool.generate_media(
+            prompt,
+            expect_kind=expect_kind,
+            images=refs,
+            timeout=timeout,
+            on_account_selected=lambda aid, sid: db.update_task(task_id, account_id=aid, session_id=sid),
+        )
         db.update_task(
             task_id,
             status="completed",
@@ -386,7 +394,13 @@ def images_generations(body: ImageGenReq, request: Request):
     db.create_task(task_id, "image", status="running", model=body.model, prompt_preview=body.prompt)
     t0 = time.time()
     try:
-        res = pool.generate_media(prompt, expect_kind="image", images=refs, timeout=timeout)
+        res = pool.generate_media(
+            prompt,
+            expect_kind="image",
+            images=refs,
+            timeout=timeout,
+            on_account_selected=lambda aid, sid: db.update_task(task_id, account_id=aid, session_id=sid),
+        )
         db.update_task(
             task_id,
             status="completed",
@@ -489,7 +503,14 @@ async def images_edits(request: Request):
     db.create_task(task_id, "image", status="running", model=model, prompt_preview=prompt)
     t0 = time.time()
     try:
-        res = await run_in_threadpool(pool.generate_media, full_prompt, "image", img_tuples, timeout)
+        res = await run_in_threadpool(
+            pool.generate_media,
+            full_prompt,
+            "image",
+            img_tuples,
+            timeout,
+            on_account_selected=lambda aid, sid: db.update_task(task_id, account_id=aid, session_id=sid),
+        )
         db.update_task(
             task_id,
             status="completed",
@@ -583,7 +604,7 @@ def create_video_task(body: VideoGenReq, request: Request):
     prompt = _build_media_prompt(
         "video", body.prompt, ratio, duration=body.duration, resolution=body.resolution, extra=body.extra, has_refs=bool(refs)
     )
-    timeout = float(body.timeout or 600)
+    timeout = float(body.timeout or 360)
     task_id = f"vid_{secrets.token_hex(6)}"
     db.create_task(task_id, "video", status="queued", model=body.model, prompt_preview=body.prompt)
     threading.Thread(target=_run_async_media, args=(db, pool, task_id, prompt, "video", refs, timeout), daemon=True).start()
@@ -636,6 +657,10 @@ def get_audio_voices(
     preview_svc = getattr(request.app.state, "voice_preview", None)
     enriched = []
     for v in voices:
+        lang_group = get_voice_language_group(v)
+        preview_url = f"{base}/v1/audio/voices/{v['id']}/preview"
+        if has_multiple_language_groups(v["id"]):
+            preview_url = f"{preview_url}?language={quote(lang_group)}"
         v_copy = {
             "id": v["id"],
             "name": v["name"],
@@ -643,11 +668,11 @@ def get_audio_voices(
             "accent": v["accent"],
             "tone": v["tone"],
             "language": v["language"],
-            "language_group": get_voice_language_group(v),
+            "language_group": lang_group,
             "description": v.get("description", ""),
             "long_description": v.get("long_description", ""),
-            "cached": preview_svc.is_cached(v["id"]) if preview_svc else False,
-            "preview_url": f"{base}/v1/audio/voices/{v['id']}/preview",
+            "cached": preview_svc.is_cached(v["id"], lang_group) if preview_svc else False,
+            "preview_url": preview_url,
         }
         enriched.append(v_copy)
     return {"object": "list", "total": len(enriched), "data": enriched}
@@ -660,6 +685,7 @@ async def preview_voice(
     request: Request,
     response_format: str = "mp3",
     refresh: bool = False,
+    language: str = "",
 ):
     db = request.app.state.db
     preview_svc = getattr(request.app.state, "voice_preview", None)
@@ -667,7 +693,7 @@ async def preview_voice(
         raise HTTPException(status_code=500, detail="Voice preview service unavailable")
 
     raw_voice = voice_id.strip()
-    voice_info = resolve_voice(raw_voice)
+    voice_info = resolve_voice(raw_voice, language=language)
     if not voice_info:
         raise HTTPException(
             status_code=400,
@@ -802,6 +828,7 @@ async def create_speech(body: SpeechReq, request: Request):
             None,
             timeout,
             skip_system_prompt=True,
+            on_account_selected=lambda aid, sid: db.update_task(task_id, account_id=aid, session_id=sid),
         )
         db.update_task(
             task_id,

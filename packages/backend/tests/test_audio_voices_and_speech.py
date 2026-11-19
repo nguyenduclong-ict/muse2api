@@ -2,7 +2,9 @@
 import asyncio
 import json
 import os
+import shutil
 import sys
+import tempfile
 import unittest
 from unittest.mock import MagicMock, patch
 
@@ -210,14 +212,15 @@ class TestSpeechPromptBuilder(unittest.TestCase):
             'Generate an MP3 audio speech file using voice "avocado_v2:vdc_31875" (Wry Noodle).\n'
             "Language: en. Speed: 100.\n"
             "\n"
-            "Do NOT read any bracket tags literally. Convert them to spoken sounds or delivery cues first:\n"
-            '- [laughs] → "Ha ha ha!"\n'
-            '- [chuckles], [giggles] → "He he he!"\n'
-            '- [sighs] → "Haa..."\n'
+            "Do NOT read any bracket tags literally. Convert them to spoken sounds or delivery cues first "
+            "(keep sounds lowercase and comma-separated, without exclamation marks, so delivery stays soft and natural):\n"
+            '- [laughs] → ", haha,"\n'
+            '- [chuckles], [giggles] → ", heh,"\n'
+            '- [clears throat] → ", hmm,"\n'
+            '- [sneezes] → "Achoo!"\n'
+            '- [sighs] → "Haiz..."\n'
             '- [gasps] → "Huh!"\n'
             '- [coughs] → "Hm hm!"\n'
-            '- [sneezes] → "Achoo!" (or "Hắt xì!" in Vietnamese)\n'
-            '- [clears throat] → "Hmm!"\n'
             '- [pause], [long pause] → "..." (brief / longer pause)\n'
             "- [whispers] → read the following words slowly and quietly\n"
             "- [shouts] → read faster and louder with emphasis\n"
@@ -241,6 +244,10 @@ class TestSpeechPromptBuilder(unittest.TestCase):
         self.assertIn('using voice "avocado_v2:MAI_01" (Aria)', prompt)
         self.assertIn("Language: vi. Speed: 125.", prompt)
         self.assertIn("Style / delivery instructions: Speak enthusiastically", prompt)
+        self.assertIn('- [laughs] → ", hơ hơ,"', prompt)
+        self.assertIn('- [chuckles], [giggles] → ", hơ hơ,"', prompt)
+        self.assertIn('- [clears throat] → ", ừm,"', prompt)
+        self.assertIn('- [sneezes] → "Hắt xì!"', prompt)
         self.assertIn('"Hello world"', prompt)
 
     def test_prompt_with_emotion_cues(self):
@@ -257,7 +264,9 @@ class TestAudioEndpoints(unittest.IsolatedAsyncioTestCase):
 
     @classmethod
     def setUpClass(cls):
+        cls.temp_dir = tempfile.mkdtemp()
         cls.cfg = Config()
+        cls.cfg.data_dir = cls.temp_dir
         cls.db = Database(cls.cfg)
         cls.api_key_data = cls.db.get_api_key()
         cls.api_key = cls.api_key_data["raw_key"]
@@ -268,6 +277,10 @@ class TestAudioEndpoints(unittest.IsolatedAsyncioTestCase):
         app.state.db = cls.db
         cls.pool = WSSPool(cls.cfg, cls.db)
         app.state.wss_pool = cls.pool
+
+    @classmethod
+    def tearDownClass(cls):
+        shutil.rmtree(cls.temp_dir, ignore_errors=True)
 
     def setUp(self):
         # Reset settings to disabled before each test
@@ -529,8 +542,9 @@ class TestAudioEndpoints(unittest.IsolatedAsyncioTestCase):
             "kind": "audio",
         }
 
-        # Mock pool.generate_media
-        with patch.object(self.pool, "generate_media", return_value=fake_media_result) as mock_gen:
+        # Mock pool.ensure_candidate and pool.generate_media
+        with patch.object(self.pool, "ensure_candidate", return_value=[{"id": "acc_test"}]), \
+             patch.object(self.pool, "generate_media", return_value=fake_media_result) as mock_gen:
             # 1. Test binary response (response_format="mp3")
             payload_mp3 = json.dumps({
                 "model": "muse-tts",

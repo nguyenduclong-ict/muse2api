@@ -293,6 +293,83 @@ class TestVoicePreviewEndpoints(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(res["deleted_files"], 1)
         self.assertEqual(self.voice_preview.get_stats()["count"], 0)
 
+    async def test_duplicate_voice_id_preview_by_language(self):
+        """Duplicate voice IDs across languages must resolve & cache independently per language."""
+        dup_id = "avocado_v2:vd3_qvd_00052"
+        v_ja = resolve_voice(dup_id, language="Japanese")
+        v_vi = resolve_voice(dup_id, language="Vietnamese")
+        self.assertIsNotNone(v_ja)
+        self.assertIsNotNone(v_vi)
+        self.assertEqual(v_ja["accent"], "Japanese")
+        self.assertEqual(v_vi["accent"], "Vietnamese")
+
+        os.makedirs(self.cfg.media_dir, exist_ok=True)
+        dummy_mp3 = os.path.join(self.cfg.media_dir, "dup_preview.mp3")
+
+        def fake_generate(prompt, kind, *args, **kwargs):
+            with open(dummy_mp3, "wb") as f:
+                f.write(b"JP_AUDIO" if "Language: ja" in prompt else b"VI_AUDIO")
+            return {
+                "filename": "dup_preview.mp3",
+                "account_id": "acc_1",
+                "session_id": "sess_1",
+                "size_bytes": 8,
+                "bytes": 8,
+            }
+
+        self.pool.generate_media.side_effect = fake_generate
+
+        # Request Japanese preview
+        status, _, body = await call_asgi(
+            app,
+            "GET",
+            f"/v1/audio/voices/{dup_id}/preview",
+            headers=self.auth_headers,
+            query_string=b"language=Japanese&response_format=json",
+        )
+        self.assertEqual(status, 200)
+        data_ja = json.loads(body.decode("utf-8"))
+        self.assertEqual(data_ja["language_group"], "Japanese")
+        self.assertEqual(data_ja["sample_text"], SAMPLE_TEXTS["Japanese"])
+        self.assertFalse(data_ja["cached"])
+        self.assertIn("avocado_v2__vd3_qvd_00052__Japanese.mp3", data_ja["url"])
+
+        # Request Vietnamese preview for the same ID: must NOT hit Japanese cache
+        status, _, body = await call_asgi(
+            app,
+            "GET",
+            f"/v1/audio/voices/{dup_id}/preview",
+            headers=self.auth_headers,
+            query_string=b"language=Vietnamese&response_format=json",
+        )
+        self.assertEqual(status, 200)
+        data_vi = json.loads(body.decode("utf-8"))
+        self.assertEqual(data_vi["language_group"], "Vietnamese")
+        self.assertEqual(data_vi["sample_text"], SAMPLE_TEXTS["Vietnamese"])
+        self.assertFalse(data_vi["cached"])
+        self.assertIn("avocado_v2__vd3_qvd_00052__Vietnamese.mp3", data_vi["url"])
+
+        # Verify audio bytes are isolated per language
+        status, _, ja_bytes = await call_asgi(
+            app,
+            "GET",
+            f"/v1/audio/voices/{dup_id}/preview",
+            headers=self.auth_headers,
+            query_string=b"language=Japanese",
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(ja_bytes, b"JP_AUDIO")
+
+        status, _, vi_bytes = await call_asgi(
+            app,
+            "GET",
+            f"/v1/audio/voices/{dup_id}/preview",
+            headers=self.auth_headers,
+            query_string=b"language=Vietnamese",
+        )
+        self.assertEqual(status, 200)
+        self.assertEqual(vi_bytes, b"VI_AUDIO")
+
 
 if __name__ == "__main__":
     unittest.main()
