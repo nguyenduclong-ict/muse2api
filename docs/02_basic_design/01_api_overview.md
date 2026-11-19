@@ -18,7 +18,11 @@
 | `POST` | `/v1/videos` | Tạo task sinh video (text-to-video & image-to-video) |
 | `POST` | `/v1/videos/generations` | Alias tạo task sinh video |
 | `GET` | `/v1/videos/{task_id}` | Tra cứu tiến trình (`progress`) & kết quả video |
-| `GET` | `/v1/media/{filename}` | Phục vụ file ảnh/video đã tải về `data/media/` |
+| `GET` | `/v1/audio/voices` | Liệt kê & lọc danh sách giọng TTS hỗ trợ (kèm trạng thái `cached` & `preview_url`) |
+| `GET` | `/v1/audio/voices/{voice_id}/preview` | Nghe thử mẫu giọng đọc TTS có cache đĩa (`mp3` binary hoặc `url` JSON, hỗ trợ `refresh=true`) |
+| `POST` | `/v1/audio/speech` | Sinh giọng nói TTS (`.mp3` binary hoặc `url` JSON, hỗ trợ emotion cues) |
+| `GET` | `/v1/media/{filename}` | Phục vụ file ảnh/video/audio đã tải về `data/media/` |
+| `GET` | `/v1/voice-previews/{filename}` | Phục vụ file mẫu giọng đọc đã cache tại `data/voice_previews/` |
 
 ## 3. Danh sách Endpoints `/admin/*` (Console)
 | Nhóm | Endpoints chính |
@@ -29,3 +33,4 @@
 | **API Key** | `GET /admin/apikey`, `POST /admin/apikey/rotate` |
 | **Tasks & Media** | `GET /admin/tasks`, `DELETE /admin/tasks/{id}`, `POST /admin/tasks/clear`, `GET /admin/media`, `POST /admin/media/delete`, `DELETE /admin/media/{name}` |
 | **Settings** | `GET /admin/settings`, `POST /admin/settings`, `POST /admin/cleanup/run` |
+| **Voice Previews** | `GET /admin/voices/preview/stats`, `DELETE /admin/voices/preview`, `DELETE /admin/voices/preview/{voice_id}` |

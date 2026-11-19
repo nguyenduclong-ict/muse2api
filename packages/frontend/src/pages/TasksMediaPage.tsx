@@ -1,6 +1,6 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { ChevronLeft, ChevronRight, Download, ExternalLink, Eye, Trash2, X } from "lucide-react";
+import { ChevronLeft, ChevronRight, Download, ExternalLink, Eye, Music, Trash2, X } from "lucide-react";
 import { Badge, Button, Card, CardContent, CardHeader, CardTitle, Checkbox } from "../components/ui";
 import { useToast } from "../components/Toast";
 import { apiFetch, formatBytes, formatTimeAgo } from "../lib/api";
@@ -254,6 +254,7 @@ export function TasksMediaPage() {
                 <option value="chat">Chat</option>
                 <option value="image">Image</option>
                 <option value="video">Video</option>
+                <option value="audio">Audio</option>
               </select>
               <select
                 value={statusFilter}
@@ -422,6 +423,10 @@ export function TasksMediaPage() {
                           >
                             {f.kind === "video" ? (
                               <video src={f.url} muted playsInline preload="metadata" className="h-full w-full object-cover" />
+                            ) : f.kind === "audio" ? (
+                              <div className="flex h-full w-full items-center justify-center bg-zinc-900 text-zinc-400">
+                                <Music className="h-4 w-4 text-indigo-400" />
+                              </div>
                             ) : (
                               <img src={f.url} alt={f.filename} loading="lazy" className="h-full w-full object-cover" />
                             )}
@@ -533,6 +538,18 @@ export function TasksMediaPage() {
                   playsInline
                   className="max-h-[75vh] w-full rounded bg-black"
                 />
+              ) : previewMedia.kind === "audio" ? (
+                <div className="flex w-full flex-col items-center justify-center gap-4 py-8">
+                  <div className="flex h-20 w-20 items-center justify-center rounded-full border border-zinc-800 bg-zinc-900 text-indigo-400">
+                    <Music className="h-10 w-10" />
+                  </div>
+                  <audio
+                    src={previewMedia.url}
+                    controls
+                    autoPlay
+                    className="w-full max-w-lg"
+                  />
+                </div>
               ) : (
                 <img
                   src={previewMedia.url}

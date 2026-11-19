@@ -13,6 +13,7 @@ from fastapi import APIRouter, HTTPException, Request
 from fastapi.responses import JSONResponse, StreamingResponse
 from pydantic import BaseModel
 
+from db import normalize_supported_models, parse_supported_models
 from muse_wss import cookies_to_header, fetch_quota_http
 from services.cookie_parser import mask_cookies, mask_proxy, parse_cookies
 
@@ -24,6 +25,7 @@ class AccountCreateReq(BaseModel):
     cookies_raw: str
     proxy_id: str | None = None
     enabled: bool = True
+    supported_models: list[str] | None = None
 
 
 class AccountPatchReq(BaseModel):
@@ -31,6 +33,7 @@ class AccountPatchReq(BaseModel):
     cookies_raw: str | None = None
     proxy_id: str | None = None
     enabled: bool | None = None
+    supported_models: list[str] | None = None
 
 
 def _serialize_account(acc: dict[str, Any], wss_connected: bool) -> dict[str, Any]:
@@ -48,6 +51,7 @@ def _serialize_account(acc: dict[str, Any], wss_connected: bool) -> dict[str, An
         "proxy_status": acc.get("proxy_status") or "",
         "has_proxy": bool(eff_proxy),
         "enabled": bool(acc["enabled"]),
+        "supported_models": parse_supported_models(acc.get("supported_models_json")),
         "status": acc["status"],
         "wss_connected": wss_connected,
         "quota": quota,
@@ -94,6 +98,7 @@ def export_accounts(request: Request):
             "proxy_id": acc.get("proxy_id"),
             "proxy_url": acc.get("effective_proxy_url") or "",
             "enabled": bool(acc["enabled"]),
+            "supported_models": parse_supported_models(acc.get("supported_models_json")),
             "status": acc["status"],
             "quota": json.loads(acc.get("quota_json") or "{}"),
         })
@@ -147,6 +152,13 @@ def create_account(body: AccountCreateReq, request: Request):
     if proxy_id and not db.get_proxy(proxy_id):
         raise HTTPException(status_code=400, detail="Selected proxy not found")
 
+    supported_models: list[str] | None = None
+    if body.supported_models is not None:
+        try:
+            supported_models = normalize_supported_models(body.supported_models)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+
     aid = f"acc_{secrets.token_hex(6)}"
     acc = db.create_account(
         account_id=aid,
@@ -155,6 +167,7 @@ def create_account(body: AccountCreateReq, request: Request):
         proxy_id=proxy_id,
         enabled=body.enabled,
         status="unknown",
+        supported_models=supported_models,
     )
     test_res = pool.test_account(aid)
     if test_res.get("ok"):
@@ -197,6 +210,12 @@ def patch_account(account_id: str, body: AccountPatchReq, request: Request):
         updates["enabled"] = 1 if body.enabled else 0
         if not body.enabled:
             pool.close_account(account_id)
+    if "supported_models" in body.model_fields_set:
+        try:
+            normalized_models = normalize_supported_models(body.supported_models)
+        except ValueError as exc:
+            raise HTTPException(status_code=400, detail=str(exc))
+        updates["supported_models_json"] = json.dumps(normalized_models)
 
     updated = db.update_account(account_id, **updates)
     return {"account": _serialize_account(updated, pool.is_connected(account_id))}

@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import os
 import secrets
 import threading
@@ -16,14 +17,38 @@ from pydantic import BaseModel, Field
 
 from auth import require_v1_api_key
 from services.ref_media import RefMediaError, load_reference_list
+from services.voice_preview import build_speech_prompt as _build_speech_prompt
+from services.voices import (
+    get_voice_language_code,
+    get_voice_language_group,
+    is_voice_allowed,
+    list_voices,
+    normalize_voice_languages,
+    resolve_voice,
+)
+from services.wss_pool import NoCandidateAccountError
+
+logger = logging.getLogger(__name__)
 
 router = APIRouter(prefix="/v1", tags=["v1"])
+
+
+def _ensure_capability_or_503(pool: Any, capability: str) -> None:
+    if hasattr(pool, "ensure_candidate"):
+        try:
+            pool.ensure_candidate(capability)
+        except NoCandidateAccountError as exc:
+            raise HTTPException(
+                status_code=503,
+                detail={"error": {"message": str(exc), "type": "service_unavailable_error"}},
+            )
 
 _IDEMPOTENCY_MAP: dict[str, str] = {}
 _IDEMPOTENCY_LOCK = threading.Lock()
 
 _MODELS = [
     "muse-spark", "muse-image", "muse-video",
+    "muse-tts", "tts-1", "tts-1-hd", "gpt-4o-mini-tts",
     "gpt-4o", "gpt-4o-mini", "gpt-4.1", "gpt-5", "o3", "o4-mini",
     "claude-sonnet-4", "claude-opus-4", "claude-3-7-sonnet",
     "deepseek-chat", "deepseek-reasoner", "gemini-2.5-pro", "gemini-2.5-flash",
@@ -82,6 +107,16 @@ class VideoGenReq(BaseModel):
     files: list[Any] | None = None
     image_url: Any = None
     reference_image: str | None = None
+
+
+class SpeechReq(BaseModel):
+    model: str = "muse-tts"
+    input: str
+    voice: str | None = None
+    instructions: str | None = None
+    speed: float | None = None
+    response_format: str = "mp3"
+    timeout: int | None = None
 
 
 def _collect_ref_items(obj: Any) -> list[Any]:
@@ -206,6 +241,7 @@ def chat_completions(body: ChatCompletionReq, request: Request):
     if not prompt.strip():
         raise HTTPException(status_code=400, detail={"error": {"message": "messages or prompt is required"}})
     refs = _load_refs_or_400(raw_refs, cfg)
+    _ensure_capability_or_503(pool, "chat")
     timeout = float(body.timeout or 180)
 
     task_id = f"tsk_{secrets.token_hex(6)}"
@@ -254,7 +290,11 @@ def chat_completions(body: ChatCompletionReq, request: Request):
             "model": body.model,
             "choices": [{"index": 0, "message": {"role": "assistant", "content": text}, "finish_reason": "stop"}],
         }
+    except NoCandidateAccountError as exc:
+        db.update_task(task_id, status="failed", error_message=str(exc), latency_ms=int((time.time() - t0) * 1000))
+        raise HTTPException(status_code=503, detail={"error": {"message": str(exc), "type": "service_unavailable_error"}})
     except Exception as exc:
+        logger.exception("POST %s failed (task_id=%s)", request.url.path, task_id)
         db.update_task(task_id, status="failed", error_message=str(exc), latency_ms=int((time.time() - t0) * 1000))
         raise HTTPException(status_code=502, detail={"error": {"message": str(exc), "type": "server_error"}})
 
@@ -267,6 +307,7 @@ def responses_endpoint(body: ResponsesReq, request: Request):
     prompt = f"{body.instructions.strip()}\n\n{raw_input}" if body.instructions else raw_input
     if not prompt.strip():
         raise HTTPException(status_code=400, detail={"error": {"message": "input is required"}})
+    _ensure_capability_or_503(pool, "chat")
     timeout = float(body.timeout or 180)
 
     task_id = f"tsk_{secrets.token_hex(6)}"
@@ -316,7 +357,11 @@ def responses_endpoint(body: ResponsesReq, request: Request):
             "model": body.model,
             "output": [{"type": "message", "role": "assistant", "content": [{"type": "output_text", "text": text}]}],
         }
+    except NoCandidateAccountError as exc:
+        db.update_task(task_id, status="failed", error_message=str(exc), latency_ms=int((time.time() - t0) * 1000))
+        raise HTTPException(status_code=503, detail={"error": {"message": str(exc), "type": "service_unavailable_error"}})
     except Exception as exc:
+        logger.exception("POST %s failed (task_id=%s)", request.url.path, task_id)
         db.update_task(task_id, status="failed", error_message=str(exc), latency_ms=int((time.time() - t0) * 1000))
         raise HTTPException(status_code=502, detail={"error": {"message": str(exc), "type": "server_error"}})
 
@@ -327,6 +372,7 @@ def images_generations(body: ImageGenReq, request: Request):
     pool = request.app.state.wss_pool
     cfg = request.app.state.cfg
     refs = _load_refs_or_400(_collect_ref_items(body), cfg)
+    _ensure_capability_or_503(pool, "image")
     ratio = body.aspect_ratio or body.size or "16:9"
     prompt = _build_media_prompt("image", body.prompt, ratio, extra=body.extra, has_refs=bool(refs))
     timeout = float(body.timeout or 300)
@@ -361,7 +407,11 @@ def images_generations(body: ImageGenReq, request: Request):
             with open(os.path.join(cfg.media_dir, res["filename"]), "rb") as f:
                 item["b64_json"] = base64.b64encode(f.read()).decode("ascii")
         return {"created": int(time.time()), "data": [item]}
+    except NoCandidateAccountError as exc:
+        db.update_task(task_id, status="failed", error_message=str(exc), latency_ms=int((time.time() - t0) * 1000))
+        raise HTTPException(status_code=503, detail={"error": {"message": str(exc), "type": "service_unavailable_error"}})
     except Exception as exc:
+        logger.exception("POST %s failed (task_id=%s)", request.url.path, task_id)
         db.update_task(task_id, status="failed", error_message=str(exc), latency_ms=int((time.time() - t0) * 1000))
         raise HTTPException(status_code=502, detail={"error": {"message": str(exc), "type": "server_error"}})
 
@@ -426,6 +476,7 @@ async def images_edits(request: Request):
         raise HTTPException(status_code=400, detail={"error": {"message": "prompt is required"}})
     if not img_tuples:
         raise HTTPException(status_code=400, detail={"error": {"message": "At least one non-empty reference media is required"}})
+    _ensure_capability_or_503(pool, "image")
 
     full_prompt = _build_media_prompt("image", prompt, ratio, extra=extra, has_refs=True)
     task_id = f"img_{secrets.token_hex(6)}"
@@ -459,7 +510,11 @@ async def images_edits(request: Request):
             with open(os.path.join(cfg.media_dir, res["filename"]), "rb") as fp:
                 item_out["b64_json"] = base64.b64encode(fp.read()).decode("ascii")
         return {"created": int(time.time()), "data": [item_out]}
+    except NoCandidateAccountError as exc:
+        db.update_task(task_id, status="failed", error_message=str(exc), latency_ms=int((time.time() - t0) * 1000))
+        raise HTTPException(status_code=503, detail={"error": {"message": str(exc), "type": "service_unavailable_error"}})
     except Exception as exc:
+        logger.exception("POST %s failed (task_id=%s)", request.url.path, task_id)
         db.update_task(task_id, status="failed", error_message=str(exc), latency_ms=int((time.time() - t0) * 1000))
         raise HTTPException(status_code=502, detail={"error": {"message": str(exc), "type": "server_error"}})
 
@@ -482,6 +537,7 @@ def create_image_task(
                 return {"id": existing["id"], "status": existing["status"]}
 
     refs = _load_refs_or_400(_collect_ref_items(body), cfg)
+    _ensure_capability_or_503(pool, "image")
     ratio = body.aspect_ratio or body.size or "16:9"
     prompt = _build_media_prompt("image", body.prompt, ratio, extra=body.extra, has_refs=bool(refs))
     timeout = float(body.timeout or 300)
@@ -522,6 +578,7 @@ def create_video_task(body: VideoGenReq, request: Request):
     pool = request.app.state.wss_pool
     cfg = request.app.state.cfg
     refs = _load_refs_or_400(_collect_ref_items(body), cfg)
+    _ensure_capability_or_503(pool, "video")
     ratio = body.aspect_ratio or body.size or "16:9"
     prompt = _build_media_prompt(
         "video", body.prompt, ratio, duration=body.duration, resolution=body.resolution, extra=body.extra, has_refs=bool(refs)
@@ -549,6 +606,244 @@ def get_video_task(task_id: str, request: Request):
     return out
 
 
+def _get_allowed_voice_languages(db: Any) -> list[str]:
+    cfg = (db.get_settings().get("voice_languages") or {}) if hasattr(db, "get_settings") else {}
+    if cfg.get("enabled"):
+        return normalize_voice_languages(cfg.get("languages") or [])
+    return []
+
+
+@router.get("/audio/voices", dependencies=[Depends(require_v1_api_key)])
+@router.get("/voices", dependencies=[Depends(require_v1_api_key)])
+def get_audio_voices(
+    request: Request,
+    gender: str = "",
+    accent: str = "",
+    language: str = "",
+    tone: str = "",
+    q: str = "",
+):
+    allowed_langs = _get_allowed_voice_languages(request.app.state.db)
+    voices = list_voices(
+        gender=gender,
+        accent=accent,
+        language=language,
+        tone=tone,
+        q=q,
+        allowed_languages=allowed_langs,
+    )
+    base = str(request.base_url).rstrip("/")
+    preview_svc = getattr(request.app.state, "voice_preview", None)
+    enriched = []
+    for v in voices:
+        v_copy = {
+            "id": v["id"],
+            "name": v["name"],
+            "gender": v["gender"],
+            "accent": v["accent"],
+            "tone": v["tone"],
+            "language": v["language"],
+            "language_group": get_voice_language_group(v),
+            "description": v.get("description", ""),
+            "long_description": v.get("long_description", ""),
+            "cached": preview_svc.is_cached(v["id"]) if preview_svc else False,
+            "preview_url": f"{base}/v1/audio/voices/{v['id']}/preview",
+        }
+        enriched.append(v_copy)
+    return {"object": "list", "total": len(enriched), "data": enriched}
+
+
+@router.get("/audio/voices/{voice_id:path}/preview", dependencies=[Depends(require_v1_api_key)])
+@router.get("/voices/{voice_id:path}/preview", dependencies=[Depends(require_v1_api_key)])
+async def preview_voice(
+    voice_id: str,
+    request: Request,
+    response_format: str = "mp3",
+    refresh: bool = False,
+):
+    db = request.app.state.db
+    preview_svc = getattr(request.app.state, "voice_preview", None)
+    if not preview_svc:
+        raise HTTPException(status_code=500, detail="Voice preview service unavailable")
+
+    raw_voice = voice_id.strip()
+    voice_info = resolve_voice(raw_voice)
+    if not voice_info:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": {"message": f"Voice '{raw_voice}' not found. See GET /v1/audio/voices for available voices.", "type": "invalid_request_error"}},
+        )
+
+    allowed_langs = _get_allowed_voice_languages(db)
+    if allowed_langs and not is_voice_allowed(voice_info, allowed_langs):
+        v_group = get_voice_language_group(voice_info)
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": {
+                    "message": (
+                        f"Voice '{voice_info['name']}' ({voice_info['id']}) belongs to language group '{v_group}', "
+                        f"which is not currently enabled in settings. Allowed languages: {', '.join(allowed_langs)}. "
+                        "See GET /v1/audio/voices for currently available voices."
+                    ),
+                    "type": "invalid_request_error",
+                }
+            },
+        )
+
+    fmt = (response_format or "mp3").strip().lower()
+    if fmt not in {"mp3", "url", "json"}:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": {"message": f"Unsupported response_format '{response_format}'. Only 'mp3', 'url', and 'json' are supported.", "type": "invalid_request_error"}},
+        )
+
+    try:
+        res = await run_in_threadpool(
+            preview_svc.get_or_generate_preview,
+            voice_info,
+            refresh=refresh,
+        )
+    except NoCandidateAccountError as exc:
+        raise HTTPException(status_code=503, detail={"error": {"message": str(exc), "type": "service_unavailable_error"}})
+    except Exception as exc:
+        logger.exception("Voice preview generation failed for %s", voice_info["id"])
+        raise HTTPException(status_code=502, detail={"error": {"message": str(exc), "type": "server_error"}})
+
+    if fmt in {"url", "json"}:
+        base = str(request.base_url).rstrip("/")
+        preview_url = f"{base}/v1/voice-previews/{res['filename']}"
+        return {
+            "voice_id": res["voice_id"],
+            "voice_name": res["voice_name"],
+            "language_group": res["language_group"],
+            "sample_text": res["sample_text"],
+            "cached": res["cached"],
+            "url": preview_url,
+            "bytes": res["bytes"],
+        }
+
+    return FileResponse(
+        res["file_path"],
+        media_type="audio/mpeg",
+        filename=res["filename"],
+        headers={
+            "Cache-Control": "public, max-age=86400",
+            "X-Voice-Preview-Cache": "HIT" if res["cached"] else "MISS",
+        },
+    )
+
+
+@router.post("/audio/speech", dependencies=[Depends(require_v1_api_key)])
+async def create_speech(body: SpeechReq, request: Request):
+    cfg = request.app.state.cfg
+    db = request.app.state.db
+    pool = request.app.state.wss_pool
+
+    text = (body.input or "").strip()
+    if not text or len(text) > 4096:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": {"message": "input must be non-empty and up to 4096 characters", "type": "invalid_request_error"}},
+        )
+
+    fmt = (body.response_format or "mp3").strip().lower()
+    if fmt not in {"mp3", "url", "json"}:
+        raise HTTPException(
+            status_code=400,
+            detail={"error": {"message": f"Unsupported response_format '{body.response_format}'. Only 'mp3', 'url', and 'json' are supported.", "type": "invalid_request_error"}},
+        )
+
+    allowed_langs = _get_allowed_voice_languages(db)
+    voice_info = resolve_voice(body.voice)
+    if not voice_info:
+        v_name = body.voice or ""
+        raise HTTPException(
+            status_code=400,
+            detail={"error": {"message": f"Voice '{v_name}' not found. See GET /v1/audio/voices for available voices.", "type": "invalid_request_error"}},
+        )
+
+    if allowed_langs and not is_voice_allowed(voice_info, allowed_langs):
+        v_group = get_voice_language_group(voice_info)
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": {
+                    "message": (
+                        f"Voice '{voice_info['name']}' ({voice_info['id']}) belongs to language group '{v_group}', "
+                        f"which is not currently enabled in settings. Allowed languages: {', '.join(allowed_langs)}. "
+                        "See GET /v1/audio/voices for currently available voices."
+                    ),
+                    "type": "invalid_request_error",
+                }
+            },
+        )
+
+    _ensure_capability_or_503(pool, "speech")
+
+    prompt = _build_speech_prompt(
+        text=text,
+        voice_id=voice_info["id"],
+        voice_name=voice_info["name"],
+        instructions=body.instructions,
+        speed=body.speed,
+        language=get_voice_language_code(voice_info),
+    )
+    timeout = float(body.timeout or 180)
+    task_id = f"aud_{secrets.token_hex(6)}"
+    db.create_task(task_id, "audio", status="running", model=body.model, prompt_preview=text[:200])
+    t0 = time.time()
+
+    try:
+        res = await run_in_threadpool(
+            pool.generate_media,
+            prompt,
+            "audio",
+            None,
+            timeout,
+            skip_system_prompt=True,
+        )
+        db.update_task(
+            task_id,
+            status="completed",
+            account_id=res["account_id"],
+            session_id=res["session_id"],
+            media_filename=res["filename"],
+            latency_ms=int((time.time() - t0) * 1000),
+        )
+
+        base = str(request.base_url).rstrip("/")
+        media_url = f"{base}/v1/media/{res['filename']}"
+        if fmt in {"url", "json"}:
+            return {
+                "created": int(time.time()),
+                "model": body.model,
+                "voice": voice_info["id"],
+                "voice_name": voice_info["name"],
+                "url": media_url,
+                "kind": "audio",
+                "bytes": res.get("size_bytes", res.get("bytes", 0)),
+            }
+
+        file_path = os.path.join(cfg.media_dir, res["filename"])
+        return FileResponse(
+            file_path,
+            media_type="audio/mpeg",
+            filename=res["filename"],
+            headers={
+                "Cache-Control": "public, max-age=86400",
+                "X-Muse-Media-Url": media_url,
+            },
+        )
+    except NoCandidateAccountError as exc:
+        db.update_task(task_id, status="failed", error_message=str(exc), latency_ms=int((time.time() - t0) * 1000))
+        raise HTTPException(status_code=503, detail={"error": {"message": str(exc), "type": "service_unavailable_error"}})
+    except Exception as exc:
+        logger.exception("POST %s failed (task_id=%s)", request.url.path, task_id)
+        db.update_task(task_id, status="failed", error_message=str(exc), latency_ms=int((time.time() - t0) * 1000))
+        raise HTTPException(status_code=502, detail={"error": {"message": str(exc), "type": "server_error"}})
+
+
 @router.get("/media/{filename}")
 def serve_media(filename: str, request: Request):
     cfg = request.app.state.cfg
@@ -557,3 +852,13 @@ def serve_media(filename: str, request: Request):
     if not os.path.isfile(p):
         raise HTTPException(status_code=404, detail="Media not found")
     return FileResponse(p, headers={"Cache-Control": "public, max-age=86400"})
+
+
+@router.get("/voice-previews/{filename}")
+def serve_voice_preview(filename: str, request: Request):
+    cfg = request.app.state.cfg
+    safe = os.path.basename(filename)
+    p = os.path.join(cfg.voice_preview_dir, safe)
+    if not os.path.isfile(p):
+        raise HTTPException(status_code=404, detail="Voice preview not found")
+    return FileResponse(p, media_type="audio/mpeg", headers={"Cache-Control": "public, max-age=86400"})

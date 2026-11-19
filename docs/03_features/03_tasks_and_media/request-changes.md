@@ -1,5 +1,14 @@
 # Request changes: Tasks & Media Management
 
+## 2026-11-19 — Hỗ trợ bộ lọc Task `audio` và trình phát Audio Preview
+
+- **Yêu cầu:** Cập nhật trang Tasks & Media để lọc được các tác vụ TTS (`type=audio`) và nghe thử file `.mp3` trực tiếp trong modal Preview.
+- **Phân loại:** Feature mở rộng
+- **Đặc tả thay đổi:**
+  - `spec.md`: cập nhật `FR-203`, `FR-205`, bổ sung `AC-206`.
+- **Quyết định:** Tận dụng phân loại `kind="audio"` đã có ở `GET /admin/media`, bổ sung option `audio` ở dropdown Type của Tasks và thẻ `<audio controls>` trong modal Preview.
+- **Task:** [T-012](../../04_tasks/012_audio_voices_and_speech/plan.md)
+
 ## 2026-11-17 — Phân trang Server cho Tasks & Media (mặc định 10)
 
 - **Yêu cầu:** Thêm phân trang server (mặc định `page_size=10`) cho danh sách Tasks và danh sách Media.

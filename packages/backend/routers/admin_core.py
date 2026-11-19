@@ -9,6 +9,7 @@ from pydantic import BaseModel
 
 from config import DEFAULT_SYSTEM_PROMPT
 from routers.accounts import _serialize_account
+from services.voices import list_available_voice_languages, normalize_voice_languages
 
 router = APIRouter(prefix="/admin", tags=["admin"])
 
@@ -25,9 +26,15 @@ class MediaCleanupUpdate(BaseModel):
     interval_minutes: int
 
 
+class VoiceLanguagesUpdate(BaseModel):
+    enabled: bool
+    languages: list[str] = []
+
+
 class SettingsPatchReq(BaseModel):
     system_prompt: SystemPromptUpdate | None = None
     media_cleanup: MediaCleanupUpdate | None = None
+    voice_languages: VoiceLanguagesUpdate | None = None
 
 
 @router.get("/dashboard")
@@ -190,6 +197,10 @@ def delete_media(filename: str, request: Request):
 def get_settings(request: Request):
     settings = request.app.state.db.get_settings()
     settings["default_system_prompt"] = DEFAULT_SYSTEM_PROMPT
+    settings["available_voice_languages"] = list_available_voice_languages()
+    vl = settings.get("voice_languages") or {"enabled": False, "languages": []}
+    vl["languages"] = normalize_voice_languages(vl.get("languages") or [])
+    settings["voice_languages"] = vl
     return settings
 
 
@@ -204,9 +215,37 @@ def update_settings(body: SettingsPatchReq, request: Request):
         mc["retention_days"] = max(0, int(mc["retention_days"]))
         mc["max_gb"] = max(0.0, float(mc["max_gb"]))
         db.update_setting("media_cleanup", mc)
+    if body.voice_languages is not None:
+        norm_langs = normalize_voice_languages(body.voice_languages.languages)
+        db.update_setting("voice_languages", {
+            "enabled": bool(body.voice_languages.enabled),
+            "languages": norm_langs,
+        })
     return get_settings(request)
 
 
 @router.post("/cleanup/run")
 def run_cleanup(request: Request):
     return request.app.state.cleanup.run_now()
+
+
+@router.get("/voices/preview/stats")
+def get_voice_preview_stats(request: Request):
+    svc = getattr(request.app.state, "voice_preview", None)
+    if not svc:
+        return {"count": 0, "total_bytes": 0}
+    return svc.get_stats()
+
+
+@router.delete("/voices/preview")
+def clear_all_voice_previews(request: Request):
+    svc = getattr(request.app.state, "voice_preview", None)
+    count = svc.clear_all() if svc else 0
+    return {"ok": True, "deleted_files": count}
+
+
+@router.delete("/voices/preview/{voice_id:path}")
+def delete_single_voice_preview(voice_id: str, request: Request):
+    svc = getattr(request.app.state, "voice_preview", None)
+    deleted = svc.delete_one(voice_id) if svc else False
+    return {"ok": True, "deleted": deleted}

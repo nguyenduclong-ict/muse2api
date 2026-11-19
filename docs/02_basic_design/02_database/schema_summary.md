@@ -3,8 +3,8 @@
 | Bảng | Mục đích | Ghi chú thiết kế |
 |---|---|---|
 | `proxies` | Lưu danh sách proxy import (`proxy_url`, `scheme`), trạng thái (`alive`, `dead`, `unknown`), thông tin `ipinfo` (`ip`, `country`, `city`, `org`, `latency_ms`). | Khi xóa bản ghi proxy, `accounts.proxy_id` tham chiếu tới nó tự động đặt về `NULL` (`ON DELETE SET NULL`). |
-| `accounts` | Lưu danh sách tài khoản `muse.ai`, cookie, `proxy_id` (FK tới `proxies`), trạng thái (`healthy`, `cooldown`, `expired`, `disabled`), snapshot quota và timestamp LRU `last_used_at`. | `cookies_json` lưu dict `{name: value}`, luôn mask khi serialize ra API. |
+| `accounts` | Lưu danh sách tài khoản `muse.ai`, cookie, `proxy_id` (FK tới `proxies`), trạng thái (`healthy`, `cooldown`, `expired`, `disabled`), danh sách model hỗ trợ (`supported_models_json`), snapshot quota và timestamp LRU `last_used_at`. | `cookies_json` lưu dict `{name: value}`, luôn mask khi serialize ra API. `supported_models_json` lưu mảng JSON các loại model được phép điều phối (`chat`, `image`, `video`, `speech`), mặc định đủ cả 4 loại. |
 | `keepalive_logs` | Ghi lịch sử các lần chạy keep-alive (`/api/session` + `/api/hatch/vm/wake`) theo từng tài khoản. | Giới hạn giữ 20 bản ghi gần nhất mỗi tài khoản. |
-| `tasks` | Theo dõi toàn bộ yêu cầu sinh nội dung (`chat`, `image`, `video`) qua `/v1/*`. | Lưu `session_id` trên VM, `media_filename` trỏ tới `data/media/`, và `latency_ms`. |
+| `tasks` | Theo dõi toàn bộ yêu cầu sinh nội dung (`chat`, `image`, `video`, `audio`) qua `/v1/*`. | Lưu `session_id` trên VM, `media_filename` trỏ tới `data/media/`, và `latency_ms`. |
 | `api_keys` | Lưu 1 API key duy nhất (`id = 1`, cột `raw_key` dạng `m2a_...`) cho ứng dụng thứ 3 gọi `/v1/*`. | Lưu raw theo yêu cầu để Admin xem, copy và xoay key (`POST /admin/apikey/rotate`). |
-| `settings` | Lưu cấu hình runtime dạng key-value JSON (`system_prompt`, `media_cleanup`). | Ghi đè giá trị mặc định từ `.env` sau khi Admin lưu trên UI. |
+| `settings` | Lưu cấu hình runtime dạng key-value JSON (`system_prompt`, `media_cleanup`, `voice_languages`). | Ghi đè giá trị mặc định từ `.env` sau khi Admin lưu trên UI. |

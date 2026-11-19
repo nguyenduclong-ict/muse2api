@@ -13,3 +13,8 @@
 | `009` | Account Edit Modal, Unified Refresh & Background WSS Tunnel | [01_accounts_and_keepalive](../03_features/01_accounts_and_keepalive/spec.md) | `Completed` | 100% |
 | `010` | Server-Side Pagination for Tasks & Media (Default 10) | [03_tasks_and_media](../03_features/03_tasks_and_media/spec.md) | `Completed` | 100% |
 | `011` | Extension Import Cookie & Account Copy Cookie | [01_accounts_and_keepalive](../03_features/01_accounts_and_keepalive/spec.md) | `Completed` | 100% |
+| `012` | Audio Voices & Speech (TTS) Endpoints + Console Support | [02_openai_api_and_keys](../03_features/02_openai_api_and_keys/spec.md), [03_tasks_and_media](../03_features/03_tasks_and_media/spec.md) | `Completed` | 100% |
+| `013` | Voice Languages Filter (Settings & TTS Voices/Speech) | [04_settings_and_cleanup](../03_features/04_settings_and_cleanup/spec.md), [02_openai_api_and_keys](../03_features/02_openai_api_and_keys/spec.md) | `Completed` | 100% |
+| `014` | Account Supported Models (`chat`, `image`, `video`, `speech`) & Capability Routing | [01_accounts_and_keepalive](../03_features/01_accounts_and_keepalive/spec.md), [02_openai_api_and_keys](../03_features/02_openai_api_and_keys/spec.md) | `Completed` | 100% |
+| `015` | Split English Voice Languages by Country (31 Canonical Groups) | [04_settings_and_cleanup](../03_features/04_settings_and_cleanup/spec.md), [02_openai_api_and_keys](../03_features/02_openai_api_and_keys/spec.md) | `Completed` | 100% |
+| `016` | API Playground & Voice Preview Cache | [06_api_playground](../03_features/06_api_playground/spec.md) | `Completed` | 100% |

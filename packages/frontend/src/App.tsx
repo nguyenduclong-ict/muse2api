@@ -7,6 +7,7 @@ import { OverviewPage } from "./pages/OverviewPage";
 import { AccountsPage } from "./pages/AccountsPage";
 import { ProxiesPage } from "./pages/ProxiesPage";
 import { ApiKeysPage } from "./pages/ApiKeysPage";
+import { PlaygroundPage } from "./pages/PlaygroundPage";
 import { TasksMediaPage } from "./pages/TasksMediaPage";
 import { SettingsPage } from "./pages/SettingsPage";
 import { apiFetch } from "./lib/api";
@@ -46,6 +47,7 @@ function ConsoleShell() {
         <Route path="/accounts" element={<AccountsPage />} />
         <Route path="/proxies" element={<ProxiesPage />} />
         <Route path="/api-keys" element={<ApiKeysPage />} />
+        <Route path="/playground" element={<PlaygroundPage />} />
         <Route path="/tasks" element={<TasksMediaPage />} />
         <Route path="/settings" element={<SettingsPage />} />
         <Route path="*" element={<Navigate to="/" replace />} />

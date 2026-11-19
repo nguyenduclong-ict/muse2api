@@ -102,6 +102,9 @@ class Config:
     tool_protocol: bool = field(
         default_factory=lambda: _env("MUSE2API_TOOL_PROTOCOL", "0") in ("1", "true", "True")
     )
+    log_level: str = field(
+        default_factory=lambda: (_env("MUSE2API_LOG_LEVEL", "INFO").strip().upper() or "INFO")
+    )
 
     @property
     def db_path(self) -> str:
@@ -110,6 +113,10 @@ class Config:
     @property
     def media_dir(self) -> str:
         return os.path.join(self.data_dir, "media")
+
+    @property
+    def voice_preview_dir(self) -> str:
+        return os.path.join(self.data_dir, "voice_previews")
 
     @property
     def frontend_dist_dir(self) -> str:

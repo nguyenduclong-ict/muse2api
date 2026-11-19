@@ -1,7 +1,7 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Play, RotateCcw, Save } from "lucide-react";
-import { Button, Card, CardContent, CardDescription, CardHeader, CardTitle, Input, Switch, Textarea } from "../components/ui";
+import { Button, Card, CardContent, CardDescription, CardHeader, CardTitle, Checkbox, Input, Switch, Textarea } from "../components/ui";
 import { useToast } from "../components/Toast";
 import { apiFetch, formatBytes } from "../lib/api";
 
@@ -9,6 +9,8 @@ interface SettingsData {
   system_prompt: { enabled: boolean; prompt: string };
   media_cleanup: { enabled: boolean; retention_days: number; max_gb: number; interval_minutes: number };
   default_system_prompt: string;
+  voice_languages?: { enabled: boolean; languages: string[] };
+  available_voice_languages?: { name: string; count: number }[];
 }
 
 export function SettingsPage() {
@@ -20,6 +22,8 @@ export function SettingsPage() {
   const [retentionDays, setRetentionDays] = useState(1);
   const [maxGb, setMaxGb] = useState(1);
   const [intervalMin, setIntervalMin] = useState(60);
+  const [vlEnabled, setVlEnabled] = useState(false);
+  const [vlSelected, setVlSelected] = useState<Set<string>>(new Set());
 
   const { data } = useQuery({
     queryKey: ["settings"],
@@ -34,6 +38,8 @@ export function SettingsPage() {
       setRetentionDays(data.media_cleanup?.retention_days ?? 1);
       setMaxGb(data.media_cleanup?.max_gb ?? 1);
       setIntervalMin(data.media_cleanup?.interval_minutes ?? 60);
+      setVlEnabled(data.voice_languages?.enabled ?? false);
+      setVlSelected(new Set(data.voice_languages?.languages ?? []));
     }
   }, [data]);
 
@@ -65,6 +71,24 @@ export function SettingsPage() {
       }),
     onSuccess: () => {
       toast.success("Media cleanup policy saved.");
+      qc.invalidateQueries({ queryKey: ["settings"] });
+    },
+    onError: (err: Error) => toast.error(`Save failed: ${err.message}`),
+  });
+
+  const saveVoiceLanguagesMut = useMutation({
+    mutationFn: () =>
+      apiFetch("/admin/settings", {
+        method: "POST",
+        body: JSON.stringify({
+          voice_languages: {
+            enabled: vlEnabled,
+            languages: Array.from(vlSelected),
+          },
+        }),
+      }),
+    onSuccess: () => {
+      toast.success("Voice languages setting saved.");
       qc.invalidateQueries({ queryKey: ["settings"] });
     },
     onError: (err: Error) => toast.error(`Save failed: ${err.message}`),
@@ -114,6 +138,94 @@ export function SettingsPage() {
             <Button loading={savePromptMut.isPending} onClick={() => savePromptMut.mutate()}>
               <Save className="h-4 w-4" /> Save Prompt
             </Button>
+          </div>
+        </CardContent>
+      </Card>
+
+      <Card>
+        <CardHeader>
+          <div className="flex items-center justify-between">
+            <div>
+              <CardTitle>Voice Languages</CardTitle>
+              <CardDescription>
+                Filter /v1/audio/voices and /v1/audio/speech by selected languages (leave off or empty to allow all voices).
+              </CardDescription>
+            </div>
+            <Switch checked={vlEnabled} onCheckedChange={setVlEnabled} />
+          </div>
+        </CardHeader>
+        <CardContent className="space-y-4">
+          <div className="grid grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-2">
+            {(data?.available_voice_languages || []).map((lang) => {
+              const checked = vlSelected.has(lang.name);
+              return (
+                <label
+                  key={lang.name}
+                  title={`${lang.name} (${lang.count} voices)`}
+                  className={`flex items-center gap-2 rounded-lg border p-2 text-xs cursor-pointer select-none transition-colors ${
+                    checked
+                      ? "border-blue-500/60 bg-blue-500/10 text-zinc-100"
+                      : "border-zinc-800 bg-zinc-950/60 text-zinc-400 hover:border-zinc-700 hover:text-zinc-200"
+                  }`}
+                >
+                  <Checkbox
+                    checked={checked}
+                    onCheckedChange={() => {
+                      setVlSelected((prev) => {
+                        const next = new Set(prev);
+                        if (next.has(lang.name)) next.delete(lang.name);
+                        else next.add(lang.name);
+                        return next;
+                      });
+                    }}
+                  />
+                  <span className="truncate font-medium">{lang.name}</span>
+                  <span className="ml-auto font-mono text-[10px] text-zinc-500">({lang.count})</span>
+                </label>
+              );
+            })}
+          </div>
+
+          <div className="flex flex-wrap items-center justify-between gap-3 border-t border-zinc-800/80 pt-3">
+            <div className="text-xs text-zinc-400">
+              Selected: <span className="font-mono text-zinc-200">{vlSelected.size}</span> languages (
+              <span className="font-mono text-zinc-200">
+                {vlEnabled && vlSelected.size > 0
+                  ? (data?.available_voice_languages || [])
+                      .filter((l) => vlSelected.has(l.name))
+                      .reduce((sum, l) => sum + l.count, 0)
+                  : (data?.available_voice_languages || []).reduce((sum, l) => sum + l.count, 0)}
+              </span>{" "}
+              voices allowed)
+            </div>
+            <div className="flex items-center gap-2">
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() =>
+                  setVlSelected(new Set((data?.available_voice_languages || []).map((l) => l.name)))
+                }
+              >
+                Select All
+              </Button>
+              <Button
+                type="button"
+                variant="outline"
+                size="sm"
+                onClick={() => setVlSelected(new Set())}
+              >
+                Clear
+              </Button>
+              <Button
+                type="button"
+                size="sm"
+                loading={saveVoiceLanguagesMut.isPending}
+                onClick={() => saveVoiceLanguagesMut.mutate()}
+              >
+                <Save className="h-4 w-4" /> Save Voice Languages
+              </Button>
+            </div>
           </div>
         </CardContent>
       </Card>

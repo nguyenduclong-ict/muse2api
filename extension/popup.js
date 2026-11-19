@@ -6,6 +6,28 @@ function setStatus(msg, type = "") {
   statusEl.textContent = msg;
 }
 
+function hideClearConfirm() {
+  document.getElementById("clearConfirm").classList.remove("visible");
+  document.getElementById("clearBtn").style.display = "";
+}
+
+async function clearMuseCookies() {
+  const existing = await chrome.cookies.getAll({ url: MUSE_URL });
+  let removed = 0;
+  for (const c of existing) {
+    const domain = c.domain ? c.domain.replace(/^\./, "") : "muse.ai";
+    const path = c.path || "/";
+    const url = `https://${domain}${path}`;
+    const res = await chrome.cookies.remove({
+      url,
+      name: c.name,
+      storeId: c.storeId,
+    });
+    if (res) removed += 1;
+  }
+  return { total: existing.length, removed };
+}
+
 function parseCookiesInput(raw) {
   const text = (raw || "").trim();
   if (!text) return [];
@@ -44,6 +66,7 @@ function parseCookiesInput(raw) {
 }
 
 document.getElementById("copyBtn").addEventListener("click", async () => {
+  hideClearConfirm();
   setStatus("Reading cookies...");
   try {
     const cookies = await chrome.cookies.getAll({ url: MUSE_URL });
@@ -67,6 +90,7 @@ document.getElementById("copyBtn").addEventListener("click", async () => {
 });
 
 document.getElementById("importBtn").addEventListener("click", async () => {
+  hideClearConfirm();
   const raw = document.getElementById("importInput").value;
   const parsed = parseCookiesInput(raw);
   if (parsed.length === 0) {
@@ -76,10 +100,7 @@ document.getElementById("importBtn").addEventListener("click", async () => {
 
   setStatus("Importing cookies...");
   try {
-    const existing = await chrome.cookies.getAll({ url: MUSE_URL });
-    for (const c of existing) {
-      await chrome.cookies.remove({ url: MUSE_URL, name: c.name });
-    }
+    await clearMuseCookies();
 
     const expirationDate = Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 365;
     let count = 0;
@@ -104,5 +125,39 @@ document.getElementById("importBtn").addEventListener("click", async () => {
     setStatus(`Imported ${count} cookies for muse.ai! Refresh muse.ai tab to apply.`, "ok");
   } catch (err) {
     setStatus("Import failed: " + (err?.message || String(err)), "err");
+  }
+});
+
+document.getElementById("clearBtn").addEventListener("click", () => {
+  setStatus("");
+  document.getElementById("clearBtn").style.display = "none";
+  document.getElementById("clearConfirm").classList.add("visible");
+});
+
+document.getElementById("cancelClearBtn").addEventListener("click", () => {
+  hideClearConfirm();
+  setStatus("");
+});
+
+document.getElementById("confirmClearBtn").addEventListener("click", async () => {
+  const confirmBtn = document.getElementById("confirmClearBtn");
+  const cancelBtn = document.getElementById("cancelClearBtn");
+  confirmBtn.disabled = true;
+  cancelBtn.disabled = true;
+  setStatus("Clearing cookies...");
+
+  try {
+    const { total, removed } = await clearMuseCookies();
+    if (total === 0) {
+      setStatus("No cookies found for muse.ai.", "ok");
+    } else {
+      setStatus(`Cleared ${removed} cookies for muse.ai! Refresh muse.ai tab to apply.`, "ok");
+    }
+  } catch (err) {
+    setStatus("Clear failed: " + (err?.message || String(err)), "err");
+  } finally {
+    confirmBtn.disabled = false;
+    cancelBtn.disabled = false;
+    hideClearConfirm();
   }
 });

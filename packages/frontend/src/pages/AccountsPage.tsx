@@ -1,6 +1,6 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Copy, Download, HeartPulse, Pencil, Plus, Puzzle, RefreshCw, Trash2, Wifi } from "lucide-react";
+import { Check, Copy, Download, HeartPulse, Pencil, Plus, Puzzle, RefreshCw, Trash2, Wifi } from "lucide-react";
 import {
   Badge,
   Button,
@@ -17,6 +17,74 @@ import { useToast } from "../components/Toast";
 import { apiFetch, formatTimeAgo } from "../lib/api";
 import type { ProxyItem } from "./ProxiesPage";
 
+export type ModelCapability = "chat" | "image" | "video" | "speech";
+
+const MODEL_OPTIONS: { value: ModelCapability; label: string }[] = [
+  { value: "chat", label: "Chat" },
+  { value: "image", label: "Image" },
+  { value: "video", label: "Video" },
+  { value: "speech", label: "Speech" },
+];
+
+const ALL_MODELS: ModelCapability[] = ["chat", "image", "video", "speech"];
+
+const MODEL_LABEL_MAP: Record<ModelCapability, string> = {
+  chat: "Chat",
+  image: "Image",
+  video: "Video",
+  speech: "Speech",
+};
+
+function toggleModelSelection(current: ModelCapability[], target: ModelCapability): ModelCapability[] {
+  const nextSet = new Set(current);
+  if (nextSet.has(target)) nextSet.delete(target);
+  else nextSet.add(target);
+  return ALL_MODELS.filter((m) => nextSet.has(m));
+}
+
+function SupportedModelsPicker({
+  selected,
+  onChange,
+}: {
+  selected: ModelCapability[];
+  onChange: (next: ModelCapability[]) => void;
+}) {
+  return (
+    <div className="space-y-1.5">
+      <div className="flex items-center justify-between">
+        <label className="text-xs font-medium text-zinc-300">Supported Models</label>
+        <span className="text-[11px] text-zinc-500">
+          {selected.length}/{ALL_MODELS.length} enabled
+        </span>
+      </div>
+      <div className="grid grid-cols-4 gap-2">
+        {MODEL_OPTIONS.map((opt) => {
+          const active = selected.includes(opt.value);
+          return (
+            <button
+              key={opt.value}
+              type="button"
+              aria-pressed={active}
+              onClick={() => onChange(toggleModelSelection(selected, opt.value))}
+              className={`inline-flex h-8 items-center justify-center gap-1.5 rounded-md border px-2 text-xs font-medium transition-colors cursor-pointer ${
+                active
+                  ? "border-blue-500/50 bg-blue-500/15 text-blue-300 hover:bg-blue-500/25"
+                  : "border-zinc-800 bg-zinc-950/70 text-zinc-500 hover:border-zinc-700 hover:text-zinc-300"
+              }`}
+            >
+              {active && <Check className="h-3 w-3 shrink-0" />}
+              <span>{opt.label}</span>
+            </button>
+          );
+        })}
+      </div>
+      {selected.length === 0 && (
+        <p className="text-[11px] text-rose-400">Select at least one supported model.</p>
+      )}
+    </div>
+  );
+}
+
 export interface AccountItem {
   id: string;
   label: string;
@@ -27,6 +95,7 @@ export interface AccountItem {
   proxy_status?: string;
   has_proxy: boolean;
   enabled: boolean;
+  supported_models?: ModelCapability[];
   status: string;
   wss_connected: boolean;
   quota: QuotaInfo;
@@ -42,6 +111,7 @@ export function AccountsPage() {
   const [label, setLabel] = useState("");
   const [cookiesRaw, setCookiesRaw] = useState("");
   const [proxyId, setProxyId] = useState("");
+  const [supportedModels, setSupportedModels] = useState<ModelCapability[]>(ALL_MODELS);
   const [exporting, setExporting] = useState(false);
   const [downloadingExt, setDownloadingExt] = useState(false);
 
@@ -50,6 +120,7 @@ export function AccountsPage() {
   const [editCookies, setEditCookies] = useState("");
   const [editProxyId, setEditProxyId] = useState("");
   const [editEnabled, setEditEnabled] = useState(true);
+  const [editSupportedModels, setEditSupportedModels] = useState<ModelCapability[]>(ALL_MODELS);
 
   const [refreshId, setRefreshId] = useState<string | null>(null);
   const [copyId, setCopyId] = useState<string | null>(null);
@@ -75,6 +146,7 @@ export function AccountsPage() {
           cookies_raw: cookiesRaw,
           proxy_id: proxyId || null,
           enabled: true,
+          supported_models: supportedModels,
         }),
       }),
     onSuccess: () => {
@@ -82,6 +154,7 @@ export function AccountsPage() {
       setLabel("");
       setCookiesRaw("");
       setProxyId("");
+      setSupportedModels(ALL_MODELS);
       toast.success("Account imported and WSS tested.");
       qc.invalidateQueries({ queryKey: ["accounts"] });
       qc.invalidateQueries({ queryKey: ["proxies"] });
@@ -106,6 +179,9 @@ export function AccountsPage() {
     setEditCookies("");
     setEditProxyId(acc.proxy_id || "");
     setEditEnabled(acc.enabled);
+    setEditSupportedModels(
+      acc.supported_models && acc.supported_models.length > 0 ? acc.supported_models : ALL_MODELS
+    );
   };
 
   const editMut = useMutation({
@@ -115,6 +191,7 @@ export function AccountsPage() {
         label: editLabel,
         proxy_id: editProxyId || null,
         enabled: editEnabled,
+        supported_models: editSupportedModels,
       };
       if (editCookies.trim()) {
         payload.cookies_raw = editCookies.trim();
@@ -269,7 +346,12 @@ export function AccountsPage() {
             <Download className="h-4 w-4" />
             Export
           </Button>
-          <Button onClick={() => setModalOpen(true)}>
+          <Button
+            onClick={() => {
+              setSupportedModels(ALL_MODELS);
+              setModalOpen(true);
+            }}
+          >
             <Plus className="h-4 w-4" />
             Import Account
           </Button>
@@ -289,21 +371,25 @@ export function AccountsPage() {
             </div>
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full table-fixed text-left text-sm">
+              <table className="w-full min-w-[960px] table-fixed text-left text-sm">
                 <thead>
                   <tr className="border-b border-zinc-800 text-xs text-zinc-400">
                     <th className="py-2 pr-2.5 font-medium">Label</th>
-                    <th className="w-[96px] py-2 pr-2.5 font-medium">Status</th>
-                    <th className="w-[184px] py-2 pr-2.5 font-medium">Quota Remaining</th>
-                    <th className="w-[104px] py-2 pr-2.5 font-medium">WSS Tunnel</th>
-                    <th className="w-[92px] py-2 pr-2.5 font-medium">Proxy</th>
-                    <th className="w-[78px] py-2 pr-2.5 font-medium">Keep-Alive</th>
-                    <th className="w-[60px] py-2 pr-2 font-medium">Enabled</th>
-                    <th className="w-[132px] py-2 pl-2 font-medium text-right sticky right-0 z-10 bg-zinc-900">Actions</th>
+                    <th className="w-[92px] py-2 pr-2.5 font-medium">Status</th>
+                    <th className="w-[144px] py-2 pr-2.5 font-medium">Models</th>
+                    <th className="w-[176px] py-2 pr-2.5 font-medium">Quota Remaining</th>
+                    <th className="w-[100px] py-2 pr-2.5 font-medium">WSS Tunnel</th>
+                    <th className="w-[88px] py-2 pr-2.5 font-medium">Proxy</th>
+                    <th className="w-[74px] py-2 pr-2.5 font-medium">Keep-Alive</th>
+                    <th className="w-[58px] py-2 pr-2 font-medium">Enabled</th>
+                    <th className="w-[124px] py-2 pl-2 font-medium text-right sticky right-0 z-10 bg-zinc-900">Actions</th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-zinc-800/60">
-                  {accounts.map((acc) => (
+                  {accounts.map((acc) => {
+                    const models =
+                      acc.supported_models && acc.supported_models.length > 0 ? acc.supported_models : ALL_MODELS;
+                    return (
                     <tr key={acc.id} className="group hover:bg-zinc-800/30">
                       <td className="py-3 pr-2.5 min-w-0">
                         <div className="truncate font-medium text-zinc-100" title={acc.label}>{acc.label}</div>
@@ -328,6 +414,15 @@ export function AccountsPage() {
                             {acc.last_error}
                           </div>
                         )}
+                      </td>
+                      <td className="py-3 pr-2.5">
+                        <div className="flex flex-wrap gap-1">
+                          {models.map((m) => (
+                            <Badge key={m} variant="default" className="px-1.5 py-0 text-[10px]">
+                              {MODEL_LABEL_MAP[m] || m}
+                            </Badge>
+                          ))}
+                        </div>
                       </td>
                       <td className="py-3 pr-2.5">
                         <QuotaBars quota={acc.quota} />
@@ -388,7 +483,8 @@ export function AccountsPage() {
                         </div>
                       </td>
                     </tr>
-                  ))}
+                    );
+                  })}
                 </tbody>
               </table>
             </div>
@@ -432,12 +528,13 @@ export function AccountsPage() {
                   ))}
                 </select>
               </div>
+              <SupportedModelsPicker selected={supportedModels} onChange={setSupportedModels} />
               <div className="flex justify-end gap-2 pt-2">
                 <Button variant="ghost" onClick={() => setModalOpen(false)}>Cancel</Button>
                 <Button
                   loading={createMut.isPending}
                   onClick={() => createMut.mutate()}
-                  disabled={!cookiesRaw.trim()}
+                  disabled={!cookiesRaw.trim() || supportedModels.length === 0}
                 >
                   Save & Test WSS
                 </Button>
@@ -498,6 +595,7 @@ export function AccountsPage() {
                   ))}
                 </select>
               </div>
+              <SupportedModelsPicker selected={editSupportedModels} onChange={setEditSupportedModels} />
               <div className="flex items-center justify-between rounded-md border border-zinc-800 bg-zinc-950/60 px-3 py-2">
                 <span className="text-xs font-medium text-zinc-300">Enabled in Pool</span>
                 <Switch checked={editEnabled} onCheckedChange={setEditEnabled} />
@@ -507,7 +605,7 @@ export function AccountsPage() {
                 <Button
                   loading={editMut.isPending}
                   onClick={() => editMut.mutate()}
-                  disabled={!editLabel.trim()}
+                  disabled={!editLabel.trim() || editSupportedModels.length === 0}
                 >
                   Save Changes
                 </Button>

@@ -98,6 +98,87 @@ Body:
 GET /v1/videos/{id} -> { "id": "vid_xxx", "status": "completed", "progress": 100, "url": "http://.../v1/media/vid_xxx.mp4", "bytes": 4994013 }`,
   },
   {
+    ep: "GET /v1/audio/voices",
+    mode: "List & Query Voices",
+    inputDoc: `Headers: Authorization: Bearer <API_KEY>
+Query params (optional):
+- gender: "M" | "F"
+- accent: "British" | "American" | "Australian" | ...
+- language: "English" | "Vietnamese" | "Japanese" | ...
+- tone: "Warm" | "Authoritative" | "Conversational" | ...
+- q: search keyword (matches id, name, tags)`,
+    outputDoc: `{
+  "object": "list",
+  "total": 280,
+  "data": [
+    {
+      "id": "avocado_v2:vdc_NOID25",
+      "name": "Timid Marshmallow",
+      "gender": "F",
+      "accent": "American",
+      "language": "eng",
+      "language_group": "English (US)",
+      "tone": "Innocent",
+      "description": "Feminine, American, Mid-range, Innocent",
+      "long_description": "medium-pitched, innocent, cautious, helpful, throaty, bright, flinty. (F, Middle-aged)",
+      "cached": false,
+      "preview_url": "http://.../v1/audio/voices/avocado_v2:vdc_NOID25/preview"
+    }
+  ]
+}`,
+  },
+  {
+    ep: "GET /v1/audio/voices/{voice_id}/preview",
+    mode: "Sample Voice with Disk Cache",
+    inputDoc: `Headers: Authorization: Bearer <API_KEY>
+Path param: voice_id (e.g. avocado_v2:MAI_01, Aria, alloy)
+Query params (optional):
+- response_format: "mp3" (default binary) or "url" / "json"
+- refresh: false (default) or true (re-generate sample from Muse)`,
+    outputDoc: `// response_format="mp3" (default):
+Binary audio/mpeg (.mp3 stream with headers X-Voice-Preview-Cache: HIT|MISS)
+
+// response_format="url" or "json":
+{
+  "voice_id": "avocado_v2:MAI_01",
+  "voice_name": "Aria",
+  "language_group": "English (US)",
+  "sample_text": "Hello! This is a quick voice preview so you can hear how I sound.",
+  "cached": true,
+  "url": "http://.../v1/voice-previews/avocado_v2__MAI_01.mp3",
+  "bytes": 245120
+}`,
+  },
+  {
+    ep: "POST /v1/audio/speech",
+    mode: "Sync Audio (.mp3) & URL",
+    inputDoc: `Headers: Authorization: Bearer <API_KEY>, Content-Type: application/json
+Body:
+{
+  "model": "muse-tts", // or "tts-1", "tts-1-hd", "gpt-4o-mini-tts"
+  "input": "Hello world! [laughs] That is fantastic.",
+  "voice": "avocado_v2:MAI_01", // or 'Aria', 'alloy', 'echo', etc. Default: Aria
+  "instructions": "Speak warmly and naturally", // optional
+  "speed": 1.0, // optional (0.25 - 4.0)
+  "response_format": "mp3" // optional: "mp3" (default binary) or "url" / "json"
+}`,
+    outputDoc: `// response_format="mp3" (default):
+Binary audio/mpeg (.mp3 stream/file)
+
+// response_format="url" or "json":
+{
+  "created": 1795058000,
+  "data": [
+    {
+      "url": "http://.../v1/media/aud_xxx.mp3",
+      "kind": "audio",
+      "voice": "avocado_v2:MAI_01",
+      "bytes": 245120
+    }
+  ]
+}`,
+  },
+  {
     ep: "GET /v1/models",
     mode: "Full Model Aliases",
     inputDoc: `Headers: Authorization: Bearer <API_KEY>`,

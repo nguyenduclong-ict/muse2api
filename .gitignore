@@ -14,7 +14,9 @@ packages/frontend/dist/
 # Secrets & Runtime Data
 .env
 .env.local
-data/
+/data/
+packages/backend/data/*
+!packages/backend/data/voices.json
 *.db
 *.db-wal
 *.db-shm

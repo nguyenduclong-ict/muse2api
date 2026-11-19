@@ -26,6 +26,7 @@ erDiagram
         string proxy_id FK
         string proxy_url
         int enabled
+        string supported_models_json
         string status
         string quota_json
         float last_used_at

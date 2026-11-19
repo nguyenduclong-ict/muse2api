@@ -11,6 +11,56 @@ from typing import Any
 
 from config import Config, DEFAULT_SYSTEM_PROMPT
 
+SUPPORTED_MODEL_TYPES: tuple[str, ...] = ("chat", "image", "video", "speech")
+_SUPPORTED_MODEL_SET: frozenset[str] = frozenset(SUPPORTED_MODEL_TYPES)
+DEFAULT_SUPPORTED_MODELS_JSON: str = json.dumps(list(SUPPORTED_MODEL_TYPES))
+
+
+def normalize_supported_models(models: list[str] | tuple[str, ...] | set[str] | None) -> list[str]:
+    """Validate and normalize account supported_models into canonical order."""
+    if not isinstance(models, (list, tuple, set)):
+        raise ValueError("supported_models must contain at least one of: chat, image, video, speech")
+    seen: set[str] = set()
+    invalid: list[str] = []
+    for item in models:
+        if not isinstance(item, str):
+            invalid.append(str(item))
+            continue
+        norm = item.strip().lower()
+        if norm not in _SUPPORTED_MODEL_SET:
+            invalid.append(item)
+        else:
+            seen.add(norm)
+    if invalid:
+        raise ValueError(
+            f"Unsupported model type(s): {', '.join(invalid)}. Allowed values: {', '.join(SUPPORTED_MODEL_TYPES)}"
+        )
+    ordered = [m for m in SUPPORTED_MODEL_TYPES if m in seen]
+    if not ordered:
+        raise ValueError(f"supported_models must contain at least one of: {', '.join(SUPPORTED_MODEL_TYPES)}")
+    return ordered
+
+
+def parse_supported_models(raw: str | list[str] | None) -> list[str]:
+    """Parse stored supported_models_json safely, defaulting to all 4 model types."""
+    if raw is None or raw == "":
+        return list(SUPPORTED_MODEL_TYPES)
+    data: Any = raw
+    if isinstance(raw, str):
+        try:
+            data = json.loads(raw)
+        except json.JSONDecodeError:
+            return list(SUPPORTED_MODEL_TYPES)
+    if not isinstance(data, list):
+        return list(SUPPORTED_MODEL_TYPES)
+    valid_set = {
+        item.strip().lower()
+        for item in data
+        if isinstance(item, str) and item.strip().lower() in _SUPPORTED_MODEL_SET
+    }
+    ordered = [m for m in SUPPORTED_MODEL_TYPES if m in valid_set]
+    return ordered or list(SUPPORTED_MODEL_TYPES)
+
 
 class Database:
     """Thread-safe SQLite wrapper using WAL mode."""
@@ -57,6 +107,7 @@ class Database:
                         proxy_id TEXT DEFAULT NULL REFERENCES proxies(id) ON DELETE SET NULL,
                         proxy_url TEXT DEFAULT '',
                         enabled INTEGER NOT NULL DEFAULT 1,
+                        supported_models_json TEXT NOT NULL DEFAULT '["chat","image","video","speech"]',
                         status TEXT NOT NULL DEFAULT 'unknown',
                         quota_json TEXT DEFAULT '{}',
                         last_used_at REAL DEFAULT 0,
@@ -105,10 +156,14 @@ class Database:
                     );
                     """
                 )
-                # Ensure proxy_id exists on pre-existing DBs
+                # Ensure proxy_id and supported_models_json exist on pre-existing DBs
                 cols = {r["name"] for r in conn.execute("PRAGMA table_info(accounts)").fetchall()}
                 if "proxy_id" not in cols:
                     conn.execute("ALTER TABLE accounts ADD COLUMN proxy_id TEXT DEFAULT NULL REFERENCES proxies(id) ON DELETE SET NULL")
+                if "supported_models_json" not in cols:
+                    conn.execute(
+                        "ALTER TABLE accounts ADD COLUMN supported_models_json TEXT NOT NULL DEFAULT '[\"chat\",\"image\",\"video\",\"speech\"]'"
+                    )
                 now = time.time()
                 row = conn.execute("SELECT raw_key FROM api_keys WHERE id = 1").fetchone()
                 if not row:
@@ -128,6 +183,10 @@ class Database:
                         "retention_days": self.cfg.media_retention_days,
                         "max_gb": self.cfg.media_max_gb,
                         "interval_minutes": self.cfg.cleanup_interval_minutes,
+                    },
+                    "voice_languages": {
+                        "enabled": False,
+                        "languages": [],
                     },
                 }
                 for k, val in defaults.items():
@@ -170,7 +229,10 @@ class Database:
             conn = self._connect()
             try:
                 rows = conn.execute("SELECT key, value_json FROM settings").fetchall()
-                return {r["key"]: json.loads(r["value_json"]) for r in rows}
+                data = {r["key"]: json.loads(r["value_json"]) for r in rows}
+                if "voice_languages" not in data:
+                    data["voice_languages"] = {"enabled": False, "languages": []}
+                return data
             finally:
                 conn.close()
 
@@ -307,17 +369,29 @@ class Database:
                 conn.close()
 
     def create_account(self, account_id: str, label: str, cookies: dict[str, str],
-                       proxy_id: str | None = None, enabled: bool = True, status: str = "unknown") -> dict[str, Any]:
+                       proxy_id: str | None = None, enabled: bool = True, status: str = "unknown",
+                       supported_models: list[str] | None = None) -> dict[str, Any]:
         now = time.time()
+        models_list = list(SUPPORTED_MODEL_TYPES) if supported_models is None else normalize_supported_models(supported_models)
         with self._lock:
             conn = self._connect()
             try:
                 conn.execute(
                     """
-                    INSERT INTO accounts (id, label, cookies_json, proxy_id, enabled, status, created_at, updated_at)
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    INSERT INTO accounts (id, label, cookies_json, proxy_id, enabled, supported_models_json, status, created_at, updated_at)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
-                    (account_id, label, json.dumps(cookies), proxy_id, 1 if enabled else 0, status, now, now),
+                    (
+                        account_id,
+                        label,
+                        json.dumps(cookies),
+                        proxy_id,
+                        1 if enabled else 0,
+                        json.dumps(models_list),
+                        status,
+                        now,
+                        now,
+                    ),
                 )
                 conn.commit()
             finally:
@@ -327,7 +401,7 @@ class Database:
     def update_account(self, account_id: str, **fields: Any) -> dict[str, Any] | None:
         if not fields:
             return self.get_account(account_id)
-        allowed = {"label", "cookies_json", "proxy_id", "enabled", "status", "quota_json",
+        allowed = {"label", "cookies_json", "proxy_id", "enabled", "supported_models_json", "status", "quota_json",
                    "last_used_at", "last_keepalive_at", "last_error"}
         updates = {k: v for k, v in fields.items() if k in allowed}
         if not updates:

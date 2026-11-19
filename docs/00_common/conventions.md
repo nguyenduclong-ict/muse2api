@@ -8,7 +8,7 @@
 
 ## 2. Format Response & Error
 - **Nhóm `/v1/*` (OpenAI-compatible):**
-  - Trả JSON theo chuẩn OpenAI (`{"error": {"message": "...", "type": "...", "code": "..."}}`) kèm HTTP status `401`, `400`, `429`, `502`, `504`.
+  - Trả JSON theo chuẩn OpenAI (`{"error": {"message": "...", "type": "...", "code": "..."}}`) kèm HTTP status `401`, `400`, `429`, `502`, `503`, `504`.
 - **Nhóm `/admin/*` (Console API):**
   - Thành công: `200 OK` / `201 Created` trả JSON trực tiếp.
   - Lỗi: `{"detail": "..."}` với HTTP status `400`, `404`, `500`.

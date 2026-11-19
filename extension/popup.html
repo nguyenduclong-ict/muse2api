@@ -52,6 +52,45 @@
     button:hover { background: #3b82f6; }
     button.secondary { background: #059669; }
     button.secondary:hover { background: #10b981; }
+    button.danger { background: #dc2626; }
+    button.danger:hover { background: #ef4444; }
+    button.danger-outline {
+      background: transparent;
+      border: 1px solid #7f1d1d;
+      color: #fca5a5;
+    }
+    button.danger-outline:hover {
+      background: #450a0a;
+      border-color: #dc2626;
+      color: #fecaca;
+    }
+    button.ghost {
+      background: #27272a;
+      color: #e4e4e7;
+    }
+    button.ghost:hover { background: #3f3f46; }
+    button:disabled {
+      opacity: 0.6;
+      cursor: not-allowed;
+    }
+    .confirm-box {
+      display: none;
+      padding: 10px;
+      border: 1px solid #7f1d1d;
+      border-radius: 8px;
+      background: #1c1012;
+    }
+    .confirm-box.visible { display: block; }
+    .confirm-box p {
+      margin: 0 0 8px;
+      color: #fecaca;
+      font-size: 11px;
+    }
+    .confirm-actions {
+      display: flex;
+      gap: 8px;
+    }
+    .confirm-actions button { flex: 1; }
     #status { margin-top: 10px; font-size: 11px; min-height: 16px; line-height: 1.4; }
     .ok { color: #34d399; }
     .err { color: #fb7185; }
@@ -67,6 +106,17 @@
   <h2>Import Cookies to muse.ai</h2>
   <textarea id="importInput" placeholder="Paste Cookie header string (hatch_sess=...; ...) or JSON..."></textarea>
   <button id="importBtn" class="secondary">Import Cookies</button>
+
+  <div class="divider"></div>
+
+  <button id="clearBtn" class="danger-outline">Clear muse.ai Cookies</button>
+  <div id="clearConfirm" class="confirm-box" role="alertdialog" aria-labelledby="clearConfirmMsg">
+    <p id="clearConfirmMsg">Clear all cookies for <strong>muse.ai</strong>? You will be logged out.</p>
+    <div class="confirm-actions">
+      <button id="cancelClearBtn" class="ghost">Cancel</button>
+      <button id="confirmClearBtn" class="danger">Confirm Clear</button>
+    </div>
+  </div>
 
   <div id="status"></div>
   <script src="popup.js"></script>

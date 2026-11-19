@@ -1,5 +1,17 @@
 # Request changes: Accounts & Keep-Alive
 
+## 2026-11-19 — Cấu hình loại model hỗ trợ (`chat`, `image`, `video`, `speech`) trên từng tài khoản
+
+- **Yêu cầu:** Thêm cài đặt chọn các loại model hỗ trợ (`chat`, `image`, `video`, `speech`) trên từng tài khoản; tài khoản tắt loại model nào thì không được chọn cho các request thuộc loại đó.
+- **Phân loại:** Feature mở rộng
+- **Đặc tả thay đổi:**
+  - `spec.md`: cập nhật `FR-001`, `FR-008`, `FR-010`; bổ sung `FR-013`, `BR-005`, `AC-013`, `AC-014`.
+  - `design.md`: bổ sung cột `Models` (badge chỉ xem) trên bảng Accounts và nhóm toggle `Supported Models` (`Chat`, `Image`, `Video`, `Speech`) trong modal Import Account & Edit Account.
+  - `logic.md`: cập nhật bảng `UI Event Handlers`, bổ sung thuật toán migrate cột `supported_models_json` và validate `supported_models`.
+  - `../../02_basic_design/02_database/erd.md`, `../../02_basic_design/02_database/schema_summary.md`: bổ sung cột `supported_models_json` cho bảng `accounts`.
+- **Quyết định:** Mặc định bật đủ cả 4 loại (`["chat", "image", "video", "speech"]`) cho cả tài khoản cũ khi migrate và tài khoản mới import; bắt buộc chọn tối thiểu 1 loại khi lưu (loại bỏ phương án cho phép danh sách rỗng vì đã có nút `Enabled` để tạm dừng toàn bộ tài khoản); trên bảng Accounts chỉ hiển thị badge dạng xem, chỉnh sửa qua modal Edit/Import; đưa `supported_models` vào Export JSON và giữ nguyên bảng Overview.
+- **Task:** [T-014](../../04_tasks/014_account_supported_models/plan.md)
+
 ## 2026-11-18 — Import Cookie vào Extension & Copy Cookie từ Account
 
 - **Yêu cầu:** Thêm chức năng import cookie vào Chrome Extension (`extension/`) và thêm nút Copy Cookie trên từng tài khoản ở màn Accounts để dán vào extension.

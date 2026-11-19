@@ -1,6 +1,6 @@
 import React from "react";
 import { NavLink } from "react-router-dom";
-import { Activity, Globe, KeyRound, LayoutDashboard, ListTodo, Settings, Users, Radio } from "lucide-react";
+import { Activity, Globe, KeyRound, LayoutDashboard, ListTodo, PlayCircle, Settings, Users, Radio } from "lucide-react";
 import { cn } from "./ui";
 
 const NAV_ITEMS: { to: string; label: string; icon: React.ComponentType<{ className?: string }>; end?: boolean }[] = [
@@ -8,6 +8,7 @@ const NAV_ITEMS: { to: string; label: string; icon: React.ComponentType<{ classN
   { to: "/accounts", label: "Accounts", icon: Users },
   { to: "/proxies", label: "Proxies", icon: Globe },
   { to: "/api-keys", label: "API & Keys", icon: KeyRound },
+  { to: "/playground", label: "Playground", icon: PlayCircle },
   { to: "/tasks", label: "Tasks & Media", icon: ListTodo },
   { to: "/settings", label: "Settings", icon: Settings },
 ];
@@ -24,7 +25,7 @@ export function Layout({
   return (
     <div className="flex h-screen overflow-hidden bg-zinc-950 text-zinc-100">
       {/* Sidebar */}
-      <aside className="flex w-60 shrink-0 flex-col border-r border-zinc-800/80 bg-zinc-950/90">
+      <aside className="flex w-64 shrink-0 flex-col border-r border-zinc-800/80 bg-zinc-950/90">
         <div className="flex h-14 items-center gap-2.5 border-b border-zinc-800/80 px-5">
           <div className="flex h-7 w-7 items-center justify-center rounded-lg bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">
             <Radio className="h-4 w-4" />

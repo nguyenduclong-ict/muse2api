@@ -1,8 +1,8 @@
 {
   "manifest_version": 3,
   "name": "muse2apiv2 Cookie Manager",
-  "version": "1.1.0",
-  "description": "Copy and import muse.ai session cookies for muse2apiv2",
+  "version": "1.2.0",
+  "description": "Copy, import, and clear muse.ai session cookies for muse2apiv2",
   "permissions": ["cookies", "clipboardWrite"],
   "host_permissions": ["https://muse.ai/*"],
   "action": {

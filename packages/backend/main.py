@@ -1,6 +1,7 @@
 """FastAPI entrypoint for muse2apiv2."""
 from __future__ import annotations
 
+import logging
 import os
 import sys
 from contextlib import asynccontextmanager
@@ -19,7 +20,24 @@ from db import Database
 from routers import accounts, admin_core, proxies, v1_openai
 from services.cleanup import CleanupService
 from services.keepalive import KeepAliveService
+from services.voice_preview import VoicePreviewService
 from services.wss_pool import WSSPool
+
+
+def _configure_logging(level_name: str) -> None:
+    """Configure root logger so application and service logs appear in stdout."""
+    level = getattr(logging, level_name.upper(), logging.INFO)
+    root = logging.getLogger()
+    if not root.handlers:
+        handler = logging.StreamHandler(sys.stdout)
+        handler.setFormatter(
+            logging.Formatter("%(asctime)s [%(levelname)s] %(name)s: %(message)s")
+        )
+        root.addHandler(handler)
+    root.setLevel(level)
+
+
+_configure_logging(Config().log_level)
 
 
 @asynccontextmanager
@@ -29,12 +47,14 @@ async def lifespan(app: FastAPI):
     wss_pool = WSSPool(cfg, db)
     keepalive = KeepAliveService(cfg, db)
     cleanup = CleanupService(cfg, db)
+    voice_preview = VoicePreviewService(cfg, db, wss_pool)
 
     app.state.cfg = cfg
     app.state.db = db
     app.state.wss_pool = wss_pool
     app.state.keepalive = keepalive
     app.state.cleanup = cleanup
+    app.state.voice_preview = voice_preview
 
     keepalive.start()
     cleanup.start()
@@ -95,4 +115,4 @@ if __name__ == "__main__":
     import uvicorn
 
     c = Config()
-    uvicorn.run("main:app", host=c.host, port=c.port, reload=False)
+    uvicorn.run("main:app", host=c.host, port=c.port, reload=False, log_level=c.log_level.lower())

@@ -21,6 +21,57 @@
 :::
 :::
 
+::: card Voice Languages
+- [x] Filter `/v1/audio/voices` and `/v1/audio/speech` by selected languages (leave off or empty to allow all voices)
+
+::: columns-3
+::: column Group 1
+- [x] English (US) (541)
+- [ ] English (UK) (200)
+- [ ] English (Australia) (73)
+- [ ] English (Ireland) (39)
+- [ ] French (35)
+- [ ] Indian (26)
+- [ ] English (South Africa) (20)
+- [ ] English (Kenya) (20)
+- [ ] English (Nigeria) (20)
+- [ ] English (Trinidad) (20)
+- [ ] Finnish (20)
+:::
+::: column Group 2
+- [ ] English (Zimbabwe) (19)
+- [ ] Indonesian (18)
+- [ ] English (New Zealand) (15)
+- [ ] Spanish (14)
+- [ ] German (13)
+- [ ] English (Singapore) (12)
+- [ ] Arabic (11)
+- [ ] English (Jamaica) (11)
+- [ ] Portuguese (11)
+- [ ] Filipino (10)
+- [ ] Malaysian (10)
+:::
+::: column Group 3
+- [ ] Chinese (9)
+- [ ] English (Canada) (9)
+- [ ] Russian (9)
+- [ ] Italian (8)
+- [ ] Thai (7)
+- [x] Vietnamese (7)
+- [x] Japanese (6)
+- [ ] Korean (4)
+- [ ] Other (1)
+:::
+:::
+
+::: row {between}
+**Selected:** 3 languages (554 voices allowed)
+::: row {right}
+[Select All]{outline} [Clear]{outline} [Save Voice Languages]{primary}
+:::
+:::
+:::
+
 ::: card Media Cleanup Policy
 - [x] Enable Scheduled Media Cleanup
 
