@@ -1,5 +1,18 @@
 # Request changes: Tasks & Media Management
 
+## 2026-11-19 — Lưu Input Request của các Task & Modal xem chi tiết
+
+- **Yêu cầu:** Lưu thêm toàn bộ input request của các task vào database và cho phép xem chi tiết trên giao diện Tasks History.
+- **Phân loại:** Feature mở rộng
+- **Đặc tả thay đổi:**
+  - `spec.md`: cập nhật `FR-201`, `FR-203`, bổ sung `FR-206`, `BR-204`, `AC-207`, `AC-208`.
+  - `design.md`: thêm nút `[View]` trên bảng Tasks History và Modal `Task Detail`.
+  - `logic.md`: thêm handler `GET /admin/tasks/{id}` và quy trình sanitize base64 + giới hạn `32 KB` cho `input_request_json`.
+  - `02_basic_design/02_database/erd.md`: bổ sung cột `input_request_json` vào bảng `TASKS`.
+  - `02_basic_design/01_api_overview.md`: bổ sung `GET /admin/tasks/{id}`.
+- **Quyết định:** Lưu JSON đầy đủ tham số cho cả 5 nguồn tạo task (`chat`, `image`, `video`, `audio`, `voice_preview`), thay thế dữ liệu base64/binary lớn bằng metadata tóm tắt, giới hạn `32 KB`, và tách payload chi tiết qua `GET /admin/tasks/{id}` để không làm chậm `GET /admin/tasks`.
+- **Task:** `chưa tạo`
+
 ## 2026-11-19 — Hỗ trợ bộ lọc Task `audio` và trình phát Audio Preview
 
 - **Yêu cầu:** Cập nhật trang Tasks & Media để lọc được các tác vụ TTS (`type=audio`) và nghe thử file `.mp3` trực tiếp trong modal Preview.

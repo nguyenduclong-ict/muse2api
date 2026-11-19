@@ -52,6 +52,7 @@ erDiagram
         string account_id FK
         string model
         string prompt_preview
+        string input_request_json
         string session_id
         string media_filename
         string error_message
