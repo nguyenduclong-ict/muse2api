@@ -13,6 +13,7 @@ from typing import Any
 
 from config import Config
 from db import Database
+from services.audio_format import process_speech_audio
 from services.voices import (
     get_voice_language_code,
     get_voice_language_group,
@@ -20,6 +21,34 @@ from services.voices import (
 )
 
 logger = logging.getLogger(__name__)
+
+_TAG_RE = re.compile(r"\[([^\[\]]*)\]")
+
+_COMMON_TAG_MAP: dict[str, str] = {
+    "sighs": "Haiz...",
+    "gasps": "Huh!",
+    "coughs": "Hm hm!",
+    "pause": "...",
+    "long pause": "...",
+}
+
+_VI_TAG_MAP: dict[str, str] = {
+    **_COMMON_TAG_MAP,
+    "laughs": ", hơ hơ,",
+    "chuckles": ", hơ hơ,",
+    "giggles": ", hơ hơ,",
+    "clears throat": ", ừm,",
+    "sneezes": "Hắt xì!",
+}
+
+_DEFAULT_TAG_MAP: dict[str, str] = {
+    **_COMMON_TAG_MAP,
+    "laughs": ", haha,",
+    "chuckles": ", heh,",
+    "giggles": ", heh,",
+    "clears throat": ", hmm,",
+    "sneezes": "Achoo!",
+}
 
 SAMPLE_TEXTS: dict[str, str] = {
     "Vietnamese": "Xin chào, đây là bản nghe thử giọng đọc để bạn kiểm tra chất lượng âm thanh.",
@@ -57,6 +86,49 @@ def get_sample_text_for_group(group: str) -> str:
     return SAMPLE_TEXTS.get(group, DEFAULT_SAMPLE_TEXT)
 
 
+def preprocess_speech_text(text: str, language: str | None = None) -> str:
+    """Convert supported bracket emotion tags locally and strip unsupported ones."""
+    lang = (language or "en").strip().lower()
+    tag_map = _VI_TAG_MAP if lang == "vi" else _DEFAULT_TAG_MAP
+
+    def _replace_tag(match: re.Match[str]) -> str:
+        key = re.sub(r"\s+", " ", match.group(1).strip().lower())
+        mapped = tag_map.get(key)
+        return f" {mapped} " if mapped else " "
+
+    cleaned_lines: list[str] = []
+    for raw_line in (text or "").splitlines():
+        line = raw_line
+        while _TAG_RE.search(line):
+            line = _TAG_RE.sub(_replace_tag, line)
+        line = re.sub(r"[ \t]+", " ", line).strip()
+        line = re.sub(r"\s+([,;!?])", r"\1", line)
+        line = re.sub(r"\s+(\.{3})", r"\1", line)
+        line = re.sub(r",\s*,+", ",", line)
+        line = re.sub(r"([.!?]),+", r"\1", line)
+        line = re.sub(r",([^\s,.;!?])", r", \1", line)
+        line = re.sub(r"[ \t]+", " ", line).strip()
+        cleaned_lines.append(line)
+
+    joined = "\n".join(cleaned_lines)
+    joined = re.sub(r"\n{3,}", "\n\n", joined)
+    return joined.strip()
+
+
+def sanitize_output_filename(filename: str | None, output_format: str = "mp3") -> str:
+    """Sanitize an audio output filename and ensure it has the expected extension."""
+    fmt = "wav" if (output_format or "").strip().lower() == "wav" else "mp3"
+    base = os.path.basename((filename or "").strip())
+    safe = re.sub(r"[^a-zA-Z0-9._-]+", "_", base).strip("._-")
+    if not safe:
+        return f"tts-{secrets.token_hex(6)}.{fmt}"
+    stem, ext = os.path.splitext(safe)
+    if ext.lower() in (".mp3", ".wav"):
+        safe_stem = stem.strip("._-") or f"tts-{secrets.token_hex(6)}"
+        return f"{safe_stem}.{fmt}"
+    return f"{safe}.{fmt}"
+
+
 def build_speech_prompt(
     text: str,
     voice_id: str,
@@ -65,10 +137,12 @@ def build_speech_prompt(
     speed: float | None = None,
     language: str | None = None,
     output_format: str = "mp3",
+    output_filename: str | None = None,
+    already_preprocessed: bool = False,
 ) -> str:
-    """Format user prompt instructions for Muse WSS speech generation."""
-    lang = (language or "en").strip() or "en"
-    fmt = (output_format or "mp3").strip().lower()
+    """Format fast CLI prompt for Muse WSS speech generation (no skill reading, no VM normalization)."""
+    lang = re.sub(r"[^a-zA-Z0-9_-]+", "", (language or "en").strip().lower()) or "en"
+    fmt = "wav" if (output_format or "mp3").strip().lower() == "wav" else "mp3"
     if speed is None or speed <= 0:
         speed_pct = 100
     elif speed <= 10:
@@ -76,50 +150,30 @@ def build_speech_prompt(
     else:
         speed_pct = round(speed)
 
-    format_desc = "a WAV (16-bit PCM)" if fmt == "wav" else "an MP3"
-    header_lines = [
-        f'Generate {format_desc} audio speech file using voice "{voice_id}" ({voice_name}).',
-        f"Language: {lang}. Speed: {speed_pct}.",
-        "Audio output: normalize to -16 LUFS, true peak max -1.5 dB, do not clip.",
-    ]
-    if instructions and instructions.strip():
-        header_lines.append(f"Style / delivery instructions: {instructions.strip()}")
-
-    if lang.lower() == "vi":
-        lang_sound_rules = (
-            '- [laughs] → ", hơ hơ,"\n'
-            '- [chuckles], [giggles] → ", hơ hơ,"\n'
-            '- [clears throat] → ", ừm,"\n'
-            '- [sneezes] → "Hắt xì!"\n'
-        )
-    else:
-        lang_sound_rules = (
-            '- [laughs] → ", haha,"\n'
-            '- [chuckles], [giggles] → ", heh,"\n'
-            '- [clears throat] → ", hmm,"\n'
-            '- [sneezes] → "Achoo!"\n'
-        )
-
-    emotion_guide = (
-        "Do NOT read any bracket tags literally. Convert them to spoken sounds or delivery cues first "
-        "(keep sounds lowercase and comma-separated, without exclamation marks, so delivery stays soft and natural):\n"
-        f"{lang_sound_rules}"
-        '- [sighs] → "Haiz..."\n'
-        '- [gasps] → "Huh!"\n'
-        '- [coughs] → "Hm hm!"\n'
-        '- [pause], [long pause] → "..." (brief / longer pause)\n'
-        "- [whispers] → read the following words slowly and quietly\n"
-        "- [shouts] → read faster and louder with emphasis\n"
-        "- [angry], [sad], [happy], [excited] → adjust pacing and tone to match the mood\n"
-        "- Any other [tag] → omit the tag, do not speak it literally"
+    safe_out = sanitize_output_filename(output_filename, fmt)
+    safe_voice_id = (
+        (voice_id or "").replace('"', "").replace("\n", "").replace("\r", "").strip()
+    )
+    safe_voice_name = (
+        (voice_name or safe_voice_id).replace("\n", " ").replace("\r", " ").strip()
+    )
+    spoken_text = (
+        (text or "").strip()
+        if already_preprocessed
+        else preprocess_speech_text(text, lang)
     )
 
-    speak_block = (
-        "Then speak this text with the converted sounds in place, don't ask any more questions:\n"
-        f'"{text}"'
+    return (
+        "Generate an audio speech file using this exact command, do not read any skill files first:\n\n"
+        f'/opt/hatch/bin/tts speak --voice "{safe_voice_id}" --language {lang} --speed {speed_pct} '
+        f"--format {fmt} --output ~/workspace/your_files/{safe_out} --text-stdin\n\n"
+        f"Voice: {safe_voice_name} ({safe_voice_id})\n"
+        f"Language: {lang}\n"
+        f"Speed: {speed_pct}\n"
+        f"Format: {fmt}\n\n"
+        "Text to speak (already converted, read exactly as written, no bracket tags left):\n"
+        f"{spoken_text}"
     )
-
-    return "\n\n".join(["\n".join(header_lines), emotion_guide, speak_block])
 
 
 class VoicePreviewService:
@@ -291,6 +345,7 @@ class VoicePreviewService:
             )
             t0 = time.time()
 
+            output_filename = f"tts-{task_id}.mp3"
             prompt = build_speech_prompt(
                 text=sample_text,
                 voice_id=voice_id,
@@ -298,6 +353,8 @@ class VoicePreviewService:
                 instructions=None,
                 speed=None,
                 language=get_voice_language_code(voice_info),
+                output_format="mp3",
+                output_filename=output_filename,
             )
 
             try:
@@ -307,18 +364,28 @@ class VoicePreviewService:
                     None,
                     timeout,
                     skip_system_prompt=True,
+                    expected_output_filename=output_filename,
                 )
                 src_path = os.path.join(self.cfg.media_dir, res["filename"])
+                processed_path, _, _ = process_speech_audio(
+                    src_path,
+                    "mp3",
+                    normalize=self.cfg.audio_normalize,
+                    target_lufs=self.cfg.audio_target_lufs,
+                    true_peak=self.cfg.audio_true_peak,
+                    lra=self.cfg.audio_lra,
+                )
                 tmp_path = dst_path + ".tmp"
-                shutil.copyfile(src_path, tmp_path)
+                shutil.copyfile(processed_path, tmp_path)
                 os.replace(tmp_path, dst_path)
 
-                # Clean up duplicate media file from media_dir
-                try:
-                    if os.path.isfile(src_path):
-                        os.remove(src_path)
-                except OSError:
-                    pass
+                # Clean up duplicate media file(s) from media_dir
+                for cleanup_path in {src_path, processed_path}:
+                    try:
+                        if cleanup_path and os.path.isfile(cleanup_path):
+                            os.remove(cleanup_path)
+                    except OSError:
+                        pass
 
                 latency_ms = int((time.time() - t0) * 1000)
                 self.db.update_task(

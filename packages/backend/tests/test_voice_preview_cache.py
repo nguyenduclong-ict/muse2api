@@ -8,7 +8,7 @@ import tempfile
 import threading
 import time
 import unittest
-from unittest.mock import MagicMock
+from unittest.mock import MagicMock, patch
 
 _BACKEND_DIR = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
 if _BACKEND_DIR not in sys.path:
@@ -216,13 +216,17 @@ class TestVoicePreviewEndpoints(unittest.IsolatedAsyncioTestCase):
         }
 
         # 1. First call: MISS -> binary audio/mpeg, creates task
-        status, hdrs, body = await call_asgi(
-            app, "GET", "/v1/audio/voices/avocado_v2:vdc_NOID25/preview", headers=self.auth_headers
-        )
+        with open(dummy_mp3, "wb") as f:
+            f.write(b"ID3\x03\x00MP3_BINARY_STREAM_CONTENT")
+
+        with patch("services.audio_format.find_ffmpeg", return_value=None):
+            status, hdrs, body = await call_asgi(
+                app, "GET", "/v1/audio/voices/avocado_v2:vdc_NOID25/preview", headers=self.auth_headers
+            )
         self.assertEqual(status, 200)
         self.assertEqual(hdrs.get("content-type"), "audio/mpeg")
         self.assertEqual(hdrs.get("x-voice-preview-cache"), "MISS")
-        self.assertEqual(body, b"MP3_BINARY_STREAM_CONTENT")
+        self.assertEqual(body, b"ID3\x03\x00MP3_BINARY_STREAM_CONTENT")
 
         tasks = self.db.list_tasks(task_type="audio")
         self.assertEqual(len(tasks), 1)
@@ -234,7 +238,7 @@ class TestVoicePreviewEndpoints(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(status, 200)
         self.assertEqual(hdrs.get("x-voice-preview-cache"), "HIT")
-        self.assertEqual(body, b"MP3_BINARY_STREAM_CONTENT")
+        self.assertEqual(body, b"ID3\x03\x00MP3_BINARY_STREAM_CONTENT")
         self.assertEqual(len(self.db.list_tasks(task_type="audio")), 1)
 
         # 3. Third call with response_format=url
@@ -249,18 +253,19 @@ class TestVoicePreviewEndpoints(unittest.IsolatedAsyncioTestCase):
         # Fetch served preview
         status, hdrs, p_body = await call_asgi(app, "GET", "/v1/voice-previews/avocado_v2__vdc_NOID25.mp3")
         self.assertEqual(status, 200)
-        self.assertEqual(p_body, b"MP3_BINARY_STREAM_CONTENT")
+        self.assertEqual(p_body, b"ID3\x03\x00MP3_BINARY_STREAM_CONTENT")
 
         # 4. Refresh call: refresh=true -> MISS
         with open(dummy_mp3, "wb") as f:
-            f.write(b"NEW_REFRESHED_CONTENT")
+            f.write(b"ID3\x03\x00NEW_REFRESHED_CONTENT")
 
-        status, hdrs, body = await call_asgi(
-            app, "GET", "/v1/audio/voices/avocado_v2:vdc_NOID25/preview", headers=self.auth_headers, query_string=b"refresh=true"
-        )
+        with patch("services.audio_format.find_ffmpeg", return_value=None):
+            status, hdrs, body = await call_asgi(
+                app, "GET", "/v1/audio/voices/avocado_v2:vdc_NOID25/preview", headers=self.auth_headers, query_string=b"refresh=true"
+            )
         self.assertEqual(status, 200)
         self.assertEqual(hdrs.get("x-voice-preview-cache"), "MISS")
-        self.assertEqual(body, b"NEW_REFRESHED_CONTENT")
+        self.assertEqual(body, b"ID3\x03\x00NEW_REFRESHED_CONTENT")
 
     async def test_preview_admin_routes(self):
         # Seed 2 previews
@@ -310,25 +315,26 @@ class TestVoicePreviewEndpoints(unittest.IsolatedAsyncioTestCase):
 
         def fake_generate(prompt, kind, *args, **kwargs):
             with open(dummy_mp3, "wb") as f:
-                f.write(b"JP_AUDIO" if "Language: ja" in prompt else b"VI_AUDIO")
+                f.write(b"ID3\x03\x00JP_AUDIO" if "Language: ja" in prompt else b"ID3\x03\x00VI_AUDIO")
             return {
                 "filename": "dup_preview.mp3",
                 "account_id": "acc_1",
                 "session_id": "sess_1",
-                "size_bytes": 8,
-                "bytes": 8,
+                "size_bytes": 11,
+                "bytes": 11,
             }
 
         self.pool.generate_media.side_effect = fake_generate
 
         # Request Japanese preview
-        status, _, body = await call_asgi(
-            app,
-            "GET",
-            f"/v1/audio/voices/{dup_id}/preview",
-            headers=self.auth_headers,
-            query_string=b"language=Japanese&response_format=json",
-        )
+        with patch("services.audio_format.find_ffmpeg", return_value=None):
+            status, _, body = await call_asgi(
+                app,
+                "GET",
+                f"/v1/audio/voices/{dup_id}/preview",
+                headers=self.auth_headers,
+                query_string=b"language=Japanese&response_format=json",
+            )
         self.assertEqual(status, 200)
         data_ja = json.loads(body.decode("utf-8"))
         self.assertEqual(data_ja["language_group"], "Japanese")
@@ -337,13 +343,14 @@ class TestVoicePreviewEndpoints(unittest.IsolatedAsyncioTestCase):
         self.assertIn("avocado_v2__vd3_qvd_00052__Japanese.mp3", data_ja["url"])
 
         # Request Vietnamese preview for the same ID: must NOT hit Japanese cache
-        status, _, body = await call_asgi(
-            app,
-            "GET",
-            f"/v1/audio/voices/{dup_id}/preview",
-            headers=self.auth_headers,
-            query_string=b"language=Vietnamese&response_format=json",
-        )
+        with patch("services.audio_format.find_ffmpeg", return_value=None):
+            status, _, body = await call_asgi(
+                app,
+                "GET",
+                f"/v1/audio/voices/{dup_id}/preview",
+                headers=self.auth_headers,
+                query_string=b"language=Vietnamese&response_format=json",
+            )
         self.assertEqual(status, 200)
         data_vi = json.loads(body.decode("utf-8"))
         self.assertEqual(data_vi["language_group"], "Vietnamese")
@@ -360,7 +367,7 @@ class TestVoicePreviewEndpoints(unittest.IsolatedAsyncioTestCase):
             query_string=b"language=Japanese",
         )
         self.assertEqual(status, 200)
-        self.assertEqual(ja_bytes, b"JP_AUDIO")
+        self.assertEqual(ja_bytes, b"ID3\x03\x00JP_AUDIO")
 
         status, _, vi_bytes = await call_asgi(
             app,
@@ -370,7 +377,44 @@ class TestVoicePreviewEndpoints(unittest.IsolatedAsyncioTestCase):
             query_string=b"language=Vietnamese",
         )
         self.assertEqual(status, 200)
-        self.assertEqual(vi_bytes, b"VI_AUDIO")
+        self.assertEqual(vi_bytes, b"ID3\x03\x00VI_AUDIO")
+
+    async def test_preview_uses_fast_prompt_and_local_process_speech_audio_ac509(self):
+        os.makedirs(self.cfg.media_dir, exist_ok=True)
+        dummy_mp3 = os.path.join(self.cfg.media_dir, "ac509_raw.mp3")
+        with open(dummy_mp3, "wb") as f:
+            f.write(b"ID3\x03\x00RAW_PREVIEW")
+
+        self.pool.generate_media.return_value = {
+            "filename": "ac509_raw.mp3",
+            "account_id": "acc_1",
+            "session_id": "sess_ac509",
+            "size_bytes": 14,
+            "bytes": 14,
+        }
+
+        def fake_process(src, fmt, **kwargs):
+            with open(src, "wb") as out_f:
+                out_f.write(b"ID3\x03\x00NORMALIZED_PREVIEW")
+            return src, False, True
+
+        with patch("services.voice_preview.process_speech_audio", side_effect=fake_process) as mock_proc:
+            status, hdrs, body = await call_asgi(
+                app, "GET", "/v1/audio/voices/avocado_v2:vdc_NOID25/preview", headers=self.auth_headers
+            )
+
+        self.assertEqual(status, 200)
+        self.assertEqual(hdrs.get("x-voice-preview-cache"), "MISS")
+        self.assertEqual(body, b"ID3\x03\x00NORMALIZED_PREVIEW")
+        sent_prompt = self.pool.generate_media.call_args.args[0]
+        expected_out = self.pool.generate_media.call_args.kwargs.get("expected_output_filename") or ""
+        self.assertTrue(expected_out.startswith("tts-aud_prev_"))
+        self.assertTrue(expected_out.endswith(".mp3"))
+        self.assertIn("do not read any skill files first", sent_prompt)
+        self.assertIn(f"--output ~/workspace/your_files/{expected_out}", sent_prompt)
+        self.assertNotIn("normalize to -16 LUFS", sent_prompt)
+        mock_proc.assert_called_once()
+        self.assertEqual(mock_proc.call_args.args[1], "mp3")
 
 
 if __name__ == "__main__":

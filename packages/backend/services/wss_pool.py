@@ -401,7 +401,8 @@ class WSSPool:
                        timeout: float = 300.0,
                        skip_system_prompt: bool = False,
                        idle_timeout: float | None = None,
-                       on_account_selected: Any = None) -> dict[str, Any]:
+                       on_account_selected: Any = None,
+                       expected_output_filename: str | None = None) -> dict[str, Any]:
         """Generate or edit image/video/audio via WSS and download binary to data/media/."""
         items = self._build_chat_items(prompt, images, skip_system_prompt=skip_system_prompt)
         capability = _EXPECT_KIND_TO_CAPABILITY.get(expect_kind, expect_kind)
@@ -459,9 +460,15 @@ class WSSPool:
                             continue
                         logger.debug("generate_media subscribe event (acc=%s, sid=%s, kind=%s): %s", aid, session_id, expect_kind, ev.get("event"))
                         if ev.get("event") == "task.status" and _as_dict(ev.get("payload")).get("status") == "completed":
-                            return self._fetch_media_from_history(client, aid, session_id, expect_kind)
+                            return self._fetch_media_from_history(
+                                client, aid, session_id, expect_kind,
+                                expected_output_filename=expected_output_filename,
+                            )
 
-                return self._fetch_media_from_history(client, aid, session_id, expect_kind)
+                return self._fetch_media_from_history(
+                    client, aid, session_id, expect_kind,
+                    expected_output_filename=expected_output_filename,
+                )
             except MuseAuthError as exc:
                 logger.warning("generate_media auth error (acc=%s, kind=%s): %s", aid, expect_kind, exc)
                 self.close_account(aid)
@@ -494,9 +501,15 @@ class WSSPool:
         return texts[-1] if texts else ""
 
     def _fetch_media_from_history(self, client: MuseWSSClient, account_id: str,
-                                  session_id: str, expect_kind: str) -> dict[str, Any]:
+                                  session_id: str, expect_kind: str,
+                                  expected_output_filename: str | None = None) -> dict[str, Any]:
+        safe_expected = os.path.basename((expected_output_filename or "").strip())
+        expected_lower = safe_expected.lower()
         media_path = ""
         mime_type = ""
+        media_bytes = b""
+        dl_st = 0
+        raw_txt = ""
         events: list[dict[str, Any]] = []
 
         def _is_match(k: str, m: str, p: str) -> bool:
@@ -507,6 +520,11 @@ class WSSPool:
                     or any((p or "").lower().endswith(ext) for ext in (".mp3", ".wav", ".ogg", ".m4a"))
                 )
             return expect_kind in k
+
+        def _is_expected_file(p: str) -> bool:
+            if not expected_lower:
+                return False
+            return os.path.basename(p).lower() == expected_lower
 
         for attempt in range(3):
             st, body = client.request("GET", f"/chat/history?session_id={session_id}", timeout=20.0)
@@ -521,6 +539,14 @@ class WSSPool:
                 "history fetch (acc=%s, sid=%s, kind=%s, attempt=%d, events=%d)",
                 account_id, session_id, expect_kind, attempt + 1, len(events),
             )
+
+            media_path = ""
+            mime_type = ""
+            first_match_path = ""
+            first_match_mime = ""
+            fallback_path = ""
+            fallback_mime = ""
+
             for ev in reversed(events):
                 if not isinstance(ev, dict):
                     continue
@@ -536,14 +562,19 @@ class WSSPool:
                         continue
                     if p.startswith("sandbox://"):
                         p = p[len("sandbox://"):]
-                    if _is_match(kind, m, p) or not media_path:
-                        if p:
-                            media_path = p.lstrip("/")
-                            mime_type = m
-                            break
+                    p_clean = p.lstrip("/")
+                    if not p_clean:
+                        continue
+                    if _is_expected_file(p_clean):
+                        media_path, mime_type = p_clean, m
+                        break
+                    if _is_match(kind, m, p_clean) and not first_match_path:
+                        first_match_path, first_match_mime = p_clean, m
+                    elif not fallback_path:
+                        fallback_path, fallback_mime = p_clean, m
                 if media_path:
                     break
-                # Also check delta.presentation -> payload.data.images / videos / audios
+
                 pdata = _as_dict(_as_dict(ev.get("payload")).get("data"))
                 if expect_kind == "audio":
                     keys_to_check = ("audios", "audio", "files", "images", "videos")
@@ -562,30 +593,62 @@ class WSSPool:
                             continue
                         if p.startswith("sandbox://"):
                             p = p[len("sandbox://"):]
-                        if _is_match(key, m, p) or not media_path:
-                            if p:
-                                media_path = p.lstrip("/")
-                                mime_type = m
-                                break
+                        p_clean = p.lstrip("/")
+                        if not p_clean:
+                            continue
+                        if _is_expected_file(p_clean):
+                            media_path, mime_type = p_clean, m
+                            break
+                        if _is_match(key, m, p_clean) and not first_match_path:
+                            first_match_path, first_match_mime = p_clean, m
+                        elif not fallback_path:
+                            fallback_path, fallback_mime = p_clean, m
                     if media_path:
                         break
                 if media_path:
                     break
+
+            if not media_path:
+                if first_match_path:
+                    media_path, mime_type = first_match_path, first_match_mime
+                elif fallback_path:
+                    media_path, mime_type = fallback_path, fallback_mime
+
             if media_path:
-                break
+                dl_st, cand_bytes = client.request("GET", f"/media/raw/{media_path}", timeout=120.0)
+                if dl_st == 200 and cand_bytes:
+                    media_bytes = cand_bytes
+                    break
+
+            if expect_kind == "audio" and safe_expected and not media_bytes:
+                for direct_path in (
+                    f"workspace/your_files/{safe_expected}",
+                    f"your_files/{safe_expected}",
+                ):
+                    d_st, d_bytes = client.request("GET", f"/media/raw/{direct_path}", timeout=120.0)
+                    if d_st == 200 and d_bytes:
+                        logger.info(
+                            "Direct audio download fallback succeeded (acc=%s, sid=%s, path=%s, bytes=%d)",
+                            account_id, session_id, direct_path, len(d_bytes),
+                        )
+                        media_path = direct_path
+                        media_bytes = d_bytes
+                        mime_type = "audio/wav" if expected_lower.endswith(".wav") else "audio/mpeg"
+                        break
+                if media_bytes:
+                    break
+
             if attempt < 2:
                 time.sleep(0.8)
 
-        if not media_path:
-            logger.warning(
-                "No %s resource produced (acc=%s, sid=%s). Raw history snippet: %s",
-                expect_kind, account_id, session_id, raw_txt[:1000],
-            )
-            assistant_txt = self._extract_latest_assistant_text(client, session_id)
-            raise MuseWSSError(f"No {expect_kind} resource produced. Assistant replied: {assistant_txt[:200]}")
-
-        dl_st, media_bytes = client.request("GET", f"/media/raw/{media_path}", timeout=120.0)
-        if dl_st != 200 or not media_bytes:
+        if not media_bytes:
+            if not media_path:
+                logger.warning(
+                    "No %s resource produced (acc=%s, sid=%s). Raw history snippet: %s",
+                    expect_kind, account_id, session_id, raw_txt[:1000],
+                )
+                assistant_txt = self._extract_latest_assistant_text(client, session_id)
+                raise MuseWSSError(f"No {expect_kind} resource produced. Assistant replied: {assistant_txt[:200]}")
             raise MuseWSSError(f"Failed to download /media/raw/{media_path}: status={dl_st}")
 
         default_ext = ".mp3" if expect_kind == "audio" else (".mp4" if expect_kind == "video" else ".png")

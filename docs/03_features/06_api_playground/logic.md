@@ -10,6 +10,7 @@ sequenceDiagram
     participant Svc as VoicePreviewService
     participant Disk as data/voice_previews/
     participant Pool as MuseWssPool
+    participant AudioFmt as Local Audio Pipeline (ffmpeg)
     participant DB as SQLite (tasks)
 
     User->>UI: Click Play Preview (or Refresh)
@@ -27,9 +28,13 @@ sequenceDiagram
         Svc->>Disk: Double-check cache (if refresh == false)
         alt Still missing or refresh == true
             Svc->>DB: create_task(aud_prev_xxx, kind="audio", prompt="[Voice Preview] ...")
-            Svc->>Pool: generate_media(speech_prompt, "audio", skip_system_prompt=True)
+            Svc->>Svc: build_speech_prompt(..., output_filename=tts-<task_id>.mp3)
+            Svc->>Pool: generate_media(fast_prompt, "audio", skip_system_prompt=True, expected_output_filename)
+            Note over Pool: Direct /media/raw fallback if history lacks resources[]
             Pool-->>Svc: {filename in data/media/, account_id, session_id, size_bytes}
-            Svc->>Disk: Move/copy to <safe_voice_id>.mp3.tmp -> os.replace() -> <safe_voice_id>.mp3
+            Svc->>AudioFmt: process_speech_audio(src, "mp3", normalize=cfg.audio_normalize)
+            AudioFmt-->>Svc: (processed_path, converted, normalized)
+            Svc->>Disk: Copy to <safe_voice_id>.mp3.tmp -> os.replace() -> <safe_voice_id>.mp3
             Svc->>DB: update_task(status="completed", account_id, latency_ms)
         end
         Svc->>Svc: Release per-voice_id Lock
@@ -118,9 +123,11 @@ Mỗi giọng được xác định nhóm ngôn ngữ qua `get_voice_language_gr
 2. Khi có yêu cầu cho `voice_id`:
    - Nếu `not refresh` và file `<voice_preview_dir>/<safe>.mp3` tồn tại với `size > 0` → trả ngay (`cached=True`).
    - Ngược lại, lấy lock riêng của `voice_id` và kiểm tra lại lần 2 (double-checked locking) nếu `not refresh`.
-   - Gọi `pool.generate_media(prompt, "audio", None, timeout=180, skip_system_prompt=True)`.
-   - Chuyển file vừa sinh từ `cfg.media_dir/<generated_filename>` sang `<voice_preview_dir>/<safe>.mp3.tmp` rồi `os.replace()` thành `<voice_preview_dir>/<safe>.mp3` (xóa bản gốc ở `data/media/` để không chiếm dung lượng kép).
-   - Cập nhật bản ghi `tasks` đã tạo (`status="completed"`, `media_filename=""` hoặc giữ tên tham chiếu riêng, `account_id`, `latency_ms`).
+   - Tạo `task_id = f"aud_prev_{secrets.token_hex(4)}"`, sinh tên file đầu ra duy nhất `output_filename = f"tts-{task_id}.mp3"` và gọi `build_speech_prompt(..., output_filename=output_filename)` (tiền xử lý câu mẫu và xuất Fast CLI prompt, xem Mục 3.5 của [OpenAI API Logic](../02_openai_api_and_keys/logic.md)).
+   - Gọi `pool.generate_media(prompt, "audio", None, timeout=180, skip_system_prompt=True, expected_output_filename=output_filename)`.
+   - Chạy `process_speech_audio(src_path, "mp3", normalize=cfg.audio_normalize, target_lufs=cfg.audio_target_lufs, true_peak=cfg.audio_true_peak, lra=cfg.audio_lra)` trên file vừa tải về tại `data/media/` để xác thực/convert MP3 và chuẩn hóa `-16 LUFS` / `-1.5 dBTP` (graceful fallback nếu thiếu `ffmpeg` và file đã là MP3 hợp lệ).
+   - Chuyển file đã xử lý từ `processed_path` sang `<voice_preview_dir>/<safe>.mp3.tmp` rồi `os.replace()` thành `<voice_preview_dir>/<safe>.mp3` (xóa bản tạm ở `data/media/` để không chiếm dung lượng kép).
+   - Cập nhật bản ghi `tasks` đã tạo (`status="completed"`, `media_filename=filename`, `account_id`, `session_id`, `latency_ms`).
 
 ## 5. Thông số kỹ thuật Backend
 - **Config (`packages/backend/config.py`):**

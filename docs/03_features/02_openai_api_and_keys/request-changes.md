@@ -1,5 +1,17 @@
 # Request changes: OpenAI-Compatible API (`/v1/*`) & API Key
 
+## 2026-11-20 — Tối ưu tốc độ tạo voice (Fast CLI Prompt, chuyển đổi tag cục bộ) & Chuẩn hóa âm lượng tại local (`ffmpeg` 2-pass `loudnorm`)
+
+- **Yêu cầu:** Tối ưu thời gian tạo voice TTS (giảm ~20s đọc skill trên Muse agent) bằng Fast Prompt chạy trực tiếp lệnh `/opt/hatch/bin/tts speak ... --text-stdin`, tiền xử lý bracket tags ở backend, và chuyển bước chuẩn hóa âm lượng (`-16 LUFS`, true peak `-1.5 dB`) về xử lý cục bộ bằng `ffmpeg`.
+- **Phân loại:** Feature mở rộng
+- **Đặc tả thay đổi:**
+  - `spec.md`: cập nhật `FR-112`, `BR-107`, `BR-108`; bổ sung `AC-115`, `AC-116`, `AC-117`.
+  - `logic.md`: cập nhật Sequence Diagram và Mục 5 (`preprocess_speech_text`, Fast Prompt `build_speech_prompt`, direct download fallback `/media/raw/`, và pipeline 2-pass `loudnorm` `process_speech_audio` trong `services/audio_format.py`).
+  - `../06_api_playground/spec.md`, `../06_api_playground/logic.md`: đồng bộ Fast Prompt và local loudness normalization cho Voice Preview cache.
+  - `../../00_common/tech_stack.md`: cập nhật vai trò `ffmpeg` (convert + 2-pass `loudnorm`).
+- **Quyết định:** Áp dụng đồng bộ cho cả `POST /v1/audio/speech` (mọi `response_format`: `mp3`, `wav`, `url`, `json`) và `GET /v1/audio/voices/{voice_id}/preview`; giữ Fast Path cho mọi request (bỏ qua `instructions` và xóa các tag delivery không phát âm để không fallback chậm 20s); dùng `ffmpeg` 2-pass `loudnorm` linear giữ nguyên sample rate gốc cấu hình qua `.env` (`MUSE2API_AUDIO_NORMALIZE=1`, mặc định bật) kèm graceful fallback khi môi trường dev thiếu `ffmpeg`; sinh tên file `--output` duy nhất `tts-<task_id>.<ext>` và bổ sung direct download fallback nếu `/chat/history` thiếu `resources[]`.
+- **Task:** [T-018](../../04_tasks/018_tts_fast_prompt_and_local_loudnorm/plan.md)
+
 ## 2026-11-19 — Hỗ trợ `response_format="wav"` + `"mp3"` cho `POST /v1/audio/speech` (tiêm prompt + fallback `ffmpeg`)
 
 - **Yêu cầu:** Hỗ trợ sinh và trả về định dạng `.wav` (16-bit PCM) song song với `.mp3` trên `POST /v1/audio/speech` cho các client như `../cartoonkit`, theo cơ chế tiêm định dạng đích vào prompt gửi Muse, kiểm tra định dạng thực tế qua header/magic bytes và tự động chạy `ffmpeg` convert fallback nếu Muse trả không đúng định dạng yêu cầu; giữ nguyên từ chối `400` với các định dạng khác (`opus`, `aac`, `flac`, `pcm`).

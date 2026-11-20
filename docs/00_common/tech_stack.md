@@ -8,7 +8,7 @@
   - `cryptography` (`X25519PrivateKey`, `X25519PublicKey`, `AESGCM`).
   - Protobuf encoder/decoder tối giản (hoặc `protobuf`) cho `NoiseTransportFrame`, `ServiceRequest`, `ServiceResponse`, `ServiceFrame`.
 - **Database:** SQLite (`sqlite3` chuẩn thư viện Python, giữ persistent connection với `RLock`; khi chạy Docker Compose lưu `muse2apiv2.db` trên Docker named volume native Linux `muse2apiv2_db:/app/db` qua `MUSE2API_DB_PATH` ở chế độ `WAL` và tự động migrate một lần từ `data/muse2apiv2.db` nếu tồn tại, còn `media/` và `voice_previews/` giữ tại `./data:/app/data`; tự fallback sang `TRUNCATE` nếu đặt DB trực tiếp trên `9p`/network mount, hỗ trợ ép qua `MUSE2API_SQLITE_JOURNAL_MODE`; đồng thời kiểm tra `PRAGMA integrity_check` khi migrate/khởi động để tự động backup và rebuild sạch qua logical SQL dump (`iterdump`) nếu phát hiện hỏng trang/freelist).
-- **Media Processing (tùy chọn):** `ffmpeg` để chuyển đổi định dạng audio cho `/v1/audio/speech` khi cần.
+- **Media Processing (tùy chọn):** `ffmpeg` phục vụ cả chuyển đổi định dạng audio (`mp3`/`wav` PCM16) và chuẩn hóa âm lượng cục bộ (2-pass `loudnorm`, `-16 LUFS`, true peak `-1.5 dB`) cho `/v1/audio/speech` và Voice Preview (cài sẵn trong Docker image; graceful fallback cho bước normalize nếu chạy dev không có `ffmpeg`).
 
 ## 2. Frontend (ReactJS)
 - **Core:** React 18+ + TypeScript + Vite + `react-router-dom`.

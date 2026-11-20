@@ -31,6 +31,7 @@ Cung cấp một giao diện **Playground** (`/playground`) trực quan ngay tro
   - Tham số truy vấn tùy chọn:
     - `response_format`: `"mp3"` (mặc định — trả trực tiếp binary `audio/mpeg` kèm header `X-Voice-Preview-Cache: HIT|MISS`) hoặc `"url"` / `"json"` (trả JSON gồm `voice_id`, `voice_name`, `language_group`, `sample_text`, `cached`, `url`, `bytes`).
     - `refresh`: `false` (mặc định) hoặc `true` (bỏ qua file cache cũ, gọi Muse sinh mẫu mới và ghi đè file cache).
+  - Khi cache miss hoặc `refresh=true`, backend sử dụng chung Fast Prompt CLI (chạy trực tiếp `/opt/hatch/bin/tts speak ... --text-stdin`, không đọc skill) và chuẩn hóa âm lượng cục bộ (`-16 LUFS`, true peak `-1.5 dB`, định dạng `.mp3`) trước khi lưu vào `data/voice_previews/`.
   - Nếu `voice_id` không tồn tại hoặc không thuộc danh sách `voice_languages` đang bật trong Settings, trả `400 invalid_request_error` tương tự `POST /v1/audio/speech`.
 - **FR-502 (Bổ sung metadata cache vào `GET /v1/audio/voices`):**
   - Mỗi phần tử trong `data` của `GET /v1/audio/voices` bổ sung thêm:
@@ -74,6 +75,7 @@ Cung cấp một giao diện **Playground** (`/playground`) trực quan ngay tro
 - **BR-504 (Ghi file nguyên tử):** File cache mới phải được ghi ra tệp tạm (`*.tmp`) trong `data/voice_previews/` rồi `os.replace()` sang tệp đích `.mp3` để tránh đọc phải file dở dang khi có yêu cầu đồng thời.
 - **BR-505 (Ghi log `tasks` khi Cache Miss):** Khi `GET /v1/audio/voices/{voice_id}/preview` bị cache miss (hoặc `refresh=true`) và phải gọi Muse TTS, hệ thống ghi một bản ghi vào bảng `tasks` với `kind="audio"`, `model="muse-tts"`, `prompt_preview="[Voice Preview] <voice_name>: <sample_text>"`. Khi cache hit, không tạo bản ghi `tasks` mới.
 - **BR-506 (Bảo toàn trạng thái trong phiên):** Chuyển đổi giữa 4 tab trong Playground không làm mất dữ liệu đang nhập hoặc kết quả vừa sinh trong cùng phiên làm việc; toàn bộ state được reset khi tải lại trang.
+- **BR-507 (Fast Prompt & Chuẩn hóa Âm lượng Cục bộ cho Voice Preview):** Khi cache miss hoặc `refresh=true`, `VoicePreviewService` sử dụng chung Fast Prompt CLI (`/opt/hatch/bin/tts speak ... --output ~/workspace/your_files/tts-<task_id>.mp3 --text-stdin`, không đọc skill), cơ chế direct download fallback (`/media/raw/workspace/your_files/<filename>`) và pipeline `process_speech_audio(..., target_format="mp3")` (2-pass `loudnorm` tuân theo cấu hình `MUSE2API_AUDIO_NORMALIZE` cùng các ngưỡng `MUSE2API_AUDIO_TARGET_LUFS`, `MUSE2API_AUDIO_TRUE_PEAK`, `MUSE2API_AUDIO_LRA` và graceful fallback khi thiếu `ffmpeg`, xem [OpenAI API Spec](../02_openai_api_and_keys/spec.md) `BR-107`) trước khi ghi nguyên tử vào `data/voice_previews/`.
 
 ## 5. Tiêu chí nghiệm thu (`AC`)
 - **AC-501:** Gọi `GET /v1/audio/voices/avocado_v2:MAI_01/preview` lần đầu với API Key hợp lệ trả `200`, `Content-Type: audio/mpeg`, header `X-Voice-Preview-Cache: MISS`, tạo file `data/voice_previews/avocado_v2__MAI_01.mp3` và ghi 1 bản ghi vào bảng `tasks`.
@@ -88,3 +90,4 @@ Cung cấp một giao diện **Playground** (`/playground`) trực quan ngay tro
   - Video hiển thị tiến trình poll và phát được video `.mp4` khi hoàn tất.
   - Audio & Voices lọc được giọng, bấm Play Preview phát âm thanh và cập nhật badge `Cached`, bấm Generate Speech phát được audio từ văn bản nhập vào.
 - **AC-508:** Bấm **Clear Preview Cache** trên Playground xóa toàn bộ file trong `data/voice_previews/`, cập nhật bộ đếm về `0 cached voices` và tắt toàn bộ badge `Cached`.
+- **AC-509:** Khi gọi `GET /v1/audio/voices/{voice_id}/preview` bị cache miss (hoặc `refresh=true`), prompt gửi Muse dùng Fast CLI với `--output ~/workspace/your_files/tts-<task_id>.mp3` (chứa `do not read any skill files first`, không chứa `normalize to -16 LUFS`), và file âm thanh trả về được xử lý qua `process_speech_audio(..., target_format="mp3")` (chuẩn hóa `-16 LUFS` / `-1.5 dBTP` khi `MUSE2API_AUDIO_NORMALIZE=1` và có `ffmpeg`, hoặc graceful fallback khi thiếu `ffmpeg`) trước khi ghi nguyên tử vào `data/voice_previews/`.

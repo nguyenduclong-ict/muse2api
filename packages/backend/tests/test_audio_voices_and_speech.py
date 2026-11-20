@@ -4,6 +4,7 @@ import asyncio
 import io
 import json
 import os
+import secrets
 import shutil
 import sys
 import tempfile
@@ -25,7 +26,9 @@ from services.audio_format import (
     ensure_audio_file_format,
     is_pcm16_wav,
     matches_target_format,
+    process_speech_audio,
 )
+from services.voice_preview import preprocess_speech_text, sanitize_output_filename
 from services.voices import (
     get_voice_language_group,
     is_voice_allowed,
@@ -251,38 +254,28 @@ def _make_pcm_wav_bytes(
 
 
 class TestSpeechPromptBuilder(unittest.TestCase):
-    """Test Muse VM prompt formatting for TTS."""
+    """Test Muse VM fast CLI prompt formatting and local tag preprocessing for TTS."""
 
     def test_exact_default_prompt_format(self):
         prompt = _build_speech_prompt(
             "Text User want to speech",
             "avocado_v2:vdc_31875",
             "Wry Noodle",
+            output_filename="tts-aud_default.mp3",
         )
         expected = (
-            'Generate an MP3 audio speech file using voice "avocado_v2:vdc_31875" (Wry Noodle).\n'
-            "Language: en. Speed: 100.\n"
-            "Audio output: normalize to -16 LUFS, true peak max -1.5 dB, do not clip.\n"
-            "\n"
-            "Do NOT read any bracket tags literally. Convert them to spoken sounds or delivery cues first "
-            "(keep sounds lowercase and comma-separated, without exclamation marks, so delivery stays soft and natural):\n"
-            '- [laughs] → ", haha,"\n'
-            '- [chuckles], [giggles] → ", heh,"\n'
-            '- [clears throat] → ", hmm,"\n'
-            '- [sneezes] → "Achoo!"\n'
-            '- [sighs] → "Haiz..."\n'
-            '- [gasps] → "Huh!"\n'
-            '- [coughs] → "Hm hm!"\n'
-            '- [pause], [long pause] → "..." (brief / longer pause)\n'
-            "- [whispers] → read the following words slowly and quietly\n"
-            "- [shouts] → read faster and louder with emphasis\n"
-            "- [angry], [sad], [happy], [excited] → adjust pacing and tone to match the mood\n"
-            "- Any other [tag] → omit the tag, do not speak it literally\n"
-            "\n"
-            "Then speak this text with the converted sounds in place, don't ask any more questions:\n"
-            '"Text User want to speech"'
+            "Generate an audio speech file using this exact command, do not read any skill files first:\n\n"
+            '/opt/hatch/bin/tts speak --voice "avocado_v2:vdc_31875" --language en --speed 100 '
+            "--format mp3 --output ~/workspace/your_files/tts-aud_default.mp3 --text-stdin\n\n"
+            "Voice: Wry Noodle (avocado_v2:vdc_31875)\n"
+            "Language: en\n"
+            "Speed: 100\n"
+            "Format: mp3\n\n"
+            "Text to speak (already converted, read exactly as written, no bracket tags left):\n"
+            "Text User want to speech"
         )
         self.assertEqual(prompt, expected)
+        self.assertNotIn("normalize to -16 LUFS", prompt)
 
     def test_wav_prompt_format(self):
         prompt = _build_speech_prompt(
@@ -290,40 +283,98 @@ class TestSpeechPromptBuilder(unittest.TestCase):
             "avocado_v2:vdc_31875",
             "Wry Noodle",
             output_format="wav",
+            output_filename="tts-aud_wav1.wav",
         )
         self.assertTrue(
             prompt.startswith(
-                'Generate a WAV (16-bit PCM) audio speech file using voice "avocado_v2:vdc_31875" (Wry Noodle).'
+                "Generate an audio speech file using this exact command, do not read any skill files first:"
             )
         )
+        self.assertIn(
+            "--format wav --output ~/workspace/your_files/tts-aud_wav1.wav --text-stdin",
+            prompt,
+        )
+        self.assertIn("Format: wav", prompt)
+        self.assertNotIn("normalize to -16 LUFS", prompt)
 
     def test_prompt_with_instructions_speed_and_language(self):
         prompt = _build_speech_prompt(
-            "Hello world",
+            "Nghe hay quá đi [laughs] để mình nói tiếp.",
             "avocado_v2:MAI_01",
             "Aria",
             instructions="Speak enthusiastically",
             speed=1.25,
             language="vi",
+            output_filename="tts-aud_vi1.wav",
+            output_format="wav",
         )
-        self.assertIn('using voice "avocado_v2:MAI_01" (Aria)', prompt)
-        self.assertIn("Language: vi. Speed: 125.", prompt)
-        self.assertIn("Style / delivery instructions: Speak enthusiastically", prompt)
-        self.assertIn('- [laughs] → ", hơ hơ,"', prompt)
-        self.assertIn('- [chuckles], [giggles] → ", hơ hơ,"', prompt)
-        self.assertIn('- [clears throat] → ", ừm,"', prompt)
-        self.assertIn('- [sneezes] → "Hắt xì!"', prompt)
-        self.assertIn('"Hello world"', prompt)
+        self.assertIn('--voice "avocado_v2:MAI_01" --language vi --speed 125 --format wav', prompt)
+        self.assertIn("Voice: Aria (avocado_v2:MAI_01)", prompt)
+        self.assertIn("Language: vi\nSpeed: 125\nFormat: wav", prompt)
+        self.assertNotIn("Speak enthusiastically", prompt)
+        self.assertNotIn("Style / delivery instructions", prompt)
+        self.assertIn("Nghe hay quá đi, hơ hơ, để mình nói tiếp.", prompt)
 
     def test_prompt_with_emotion_cues(self):
-        text = "I could not believe it! [laughs] That was hilarious. [whispers] Don't tell anyone."
+        text = "I could not believe it! [laughs] That was hilarious. [whispers] Don't tell anyone. [unknown]"
         prompt = _build_speech_prompt(
-            text, "avocado_v2:MAI_01", "Aria", "Natural storytelling"
+            text, "avocado_v2:MAI_01", "Aria", "Natural storytelling",
+            output_filename="tts-aud_en1.mp3",
         )
-        self.assertIn('using voice "avocado_v2:MAI_01" (Aria)', prompt)
-        self.assertIn("Do NOT read any bracket tags literally.", prompt)
-        self.assertIn("Style / delivery instructions: Natural storytelling", prompt)
-        self.assertIn(f'"{text}"', prompt)
+        self.assertIn("Voice: Aria (avocado_v2:MAI_01)", prompt)
+        self.assertIn("haha,", prompt)
+        self.assertNotIn("[laughs]", prompt)
+        self.assertNotIn("[whispers]", prompt)
+        self.assertNotIn("[unknown]", prompt)
+        self.assertNotIn("Natural storytelling", prompt)
+        self.assertNotIn("[", prompt)
+        self.assertNotIn("]", prompt)
+
+    def test_preprocess_speech_text_tags_and_empty(self):
+        self.assertEqual(
+            preprocess_speech_text("Nghe hay quá đi [laughs] để mình nói tiếp.", "vi"),
+            "Nghe hay quá đi, hơ hơ, để mình nói tiếp.",
+        )
+        vi_out = preprocess_speech_text(
+            "[LAUGHS] Xin chào [chuckles] [whispers] bí mật [pause] nhé [clears throat] [sneezes] [unknown]",
+            "vi",
+        )
+        self.assertNotIn("[", vi_out)
+        self.assertNotIn("]", vi_out)
+        self.assertIn(", hơ hơ,", vi_out)
+        self.assertIn(", ừm,", vi_out)
+        self.assertIn("Hắt xì!", vi_out)
+        self.assertIn("...", vi_out)
+        self.assertNotIn("whispers", vi_out)
+        self.assertNotIn("unknown", vi_out)
+
+        en_out = preprocess_speech_text(
+            "Wait [ long pause ] [chuckles] [sighs] [gasps] [coughs] [shouts] Go!",
+            "en",
+        )
+        self.assertNotIn("[", en_out)
+        self.assertIn("Wait... heh,", en_out)
+        self.assertEqual(
+            preprocess_speech_text("That was funny [chuckles] right?", "en"),
+            "That was funny, heh, right?",
+        )
+        self.assertIn("Haiz...", en_out)
+        self.assertIn("Huh!", en_out)
+        self.assertIn("Hm hm!", en_out)
+        self.assertIn("...", en_out)
+
+        self.assertEqual(preprocess_speech_text("[whispers] [sad] [angry]", "vi"), "")
+        self.assertEqual(
+            preprocess_speech_text("Line 1 [whispers]\n\nLine 2 [laughs] ok", "vi"),
+            "Line 1\n\nLine 2, hơ hơ, ok",
+        )
+
+    def test_sanitize_output_filename(self):
+        self.assertEqual(
+            sanitize_output_filename("../../etc/tts-abc.mp3", "wav"),
+            "tts-abc.wav",
+        )
+        self.assertTrue(sanitize_output_filename("", "mp3").endswith(".mp3"))
 
 
 class TestAudioFormatService(unittest.TestCase):
@@ -403,6 +454,129 @@ class TestAudioFormatService(unittest.TestCase):
             with patch("services.audio_format.find_ffmpeg", return_value=None):
                 with self.assertRaises(AudioConversionError):
                     ensure_audio_file_format(mp3_no_ffmpeg, "wav")
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    def test_process_speech_audio_2pass_loudnorm_and_sample_rate(self):
+        tmp_dir = tempfile.mkdtemp()
+        try:
+            wav_path = os.path.join(tmp_dir, "speech.wav")
+            orig_bytes = _make_pcm_wav_bytes(framerate=24000)
+            norm_bytes = _make_pcm_wav_bytes(framerate=24000, nframes=480)
+            with open(wav_path, "wb") as f:
+                f.write(orig_bytes)
+
+            recorded_cmds = []
+
+            def fake_run(cmd, capture_output=True, text=True, timeout=60):
+                recorded_cmds.append(cmd)
+                proc = MagicMock()
+                proc.returncode = 0
+                proc.stdout = ""
+                if len(recorded_cmds) == 1:
+                    proc.stderr = (
+                        "Stream #0:0: Audio: pcm_s16le, 24000 Hz, mono, s16, 384 kb/s\n"
+                        '{\n'
+                        '  "input_i" : "-24.50",\n'
+                        '  "input_tp" : "-5.10",\n'
+                        '  "input_lra" : "3.20",\n'
+                        '  "input_thresh" : "-35.00",\n'
+                        '  "target_offset" : "0.40"\n'
+                        '}\n'
+                    )
+                else:
+                    proc.stderr = ""
+                    with open(cmd[-1], "wb") as out_f:
+                        out_f.write(norm_bytes)
+                return proc
+
+            with patch("services.audio_format.find_ffmpeg", return_value="/usr/bin/ffmpeg"), patch(
+                "services.audio_format.subprocess.run", side_effect=fake_run
+            ):
+                out_path, converted, normalized = process_speech_audio(wav_path, "wav", normalize=True)
+
+            self.assertEqual(out_path, wav_path)
+            self.assertFalse(converted)
+            self.assertTrue(normalized)
+            self.assertEqual(len(recorded_cmds), 2)
+            self.assertIn("loudnorm=I=-16:TP=-1.5:LRA=11:print_format=json", recorded_cmds[0])
+            pass2 = recorded_cmds[1]
+            af_val = pass2[pass2.index("-af") + 1]
+            self.assertIn("measured_I=-24.50", af_val)
+            self.assertIn("linear=true", af_val)
+            self.assertIn("-ar", pass2)
+            self.assertEqual(pass2[pass2.index("-ar") + 1], "24000")
+            with open(out_path, "rb") as f:
+                self.assertEqual(f.read(), norm_bytes)
+        finally:
+            shutil.rmtree(tmp_dir, ignore_errors=True)
+
+    def test_process_speech_audio_1pass_silent_and_fallbacks(self):
+        tmp_dir = tempfile.mkdtemp()
+        try:
+            # 1. 1-pass fallback when pass 1 JSON is missing
+            mp3_path = os.path.join(tmp_dir, "onepass.mp3")
+            with open(mp3_path, "wb") as f:
+                f.write(b"ID3\x03\x00#MP3#")
+
+            cmds = []
+
+            def fake_run_no_json(cmd, capture_output=True, text=True, timeout=60):
+                cmds.append(cmd)
+                p = MagicMock()
+                p.returncode = 0
+                p.stdout = ""
+                if len(cmds) == 1:
+                    p.stderr = "Stream #0:0: Audio: mp3, 44100 Hz, mono, fltp"
+                else:
+                    p.stderr = ""
+                    with open(cmd[-1], "wb") as out_f:
+                        out_f.write(b"ID3\x03\x00#NORM#")
+                return p
+
+            with patch("services.audio_format.find_ffmpeg", return_value="/usr/bin/ffmpeg"), patch(
+                "services.audio_format.subprocess.run", side_effect=fake_run_no_json
+            ):
+                out_path, converted, normalized = process_speech_audio(mp3_path, "mp3", normalize=True)
+            self.assertFalse(converted)
+            self.assertTrue(normalized)
+            self.assertEqual(cmds[1][cmds[1].index("-af") + 1], "loudnorm=I=-16:TP=-1.5:LRA=11")
+            self.assertEqual(cmds[1][cmds[1].index("-ar") + 1], "44100")
+
+            # 2. Silent clip (input_i == -inf) skips pass 2
+            silent_wav = os.path.join(tmp_dir, "silent.wav")
+            with open(silent_wav, "wb") as f:
+                f.write(_make_pcm_wav_bytes())
+            silent_proc = MagicMock(
+                returncode=0,
+                stdout="",
+                stderr='{"input_i": "-inf", "input_tp": "-inf", "input_lra": "0.0", "input_thresh": "-70.0", "target_offset": "0.0"}',
+            )
+            with patch("services.audio_format.find_ffmpeg", return_value="/usr/bin/ffmpeg"), patch(
+                "services.audio_format.subprocess.run", return_value=silent_proc
+            ) as mock_run:
+                out_path, converted, normalized = process_speech_audio(silent_wav, "wav", normalize=True)
+            self.assertFalse(converted)
+            self.assertFalse(normalized)
+            mock_run.assert_called_once()
+
+            # 3. Missing ffmpeg with valid format gracefully falls back (normalized=False)
+            with patch("services.audio_format.find_ffmpeg", return_value=None), self.assertLogs(
+                "services.audio_format", level="WARNING"
+            ):
+                out_path, converted, normalized = process_speech_audio(silent_wav, "wav", normalize=True)
+            self.assertEqual(out_path, silent_wav)
+            self.assertFalse(converted)
+            self.assertFalse(normalized)
+
+            # 4. FFmpeg runtime error with valid format gracefully falls back
+            err_proc = MagicMock(returncode=1, stdout="", stderr="filter failure")
+            with patch("services.audio_format.find_ffmpeg", return_value="/usr/bin/ffmpeg"), patch(
+                "services.audio_format.subprocess.run", return_value=err_proc
+            ), self.assertLogs("services.audio_format", level="WARNING"):
+                out_path, converted, normalized = process_speech_audio(silent_wav, "wav", normalize=True)
+            self.assertFalse(converted)
+            self.assertFalse(normalized)
         finally:
             shutil.rmtree(tmp_dir, ignore_errors=True)
 
@@ -767,12 +941,14 @@ class TestAudioEndpoints(unittest.IsolatedAsyncioTestCase):
             "kind": "audio",
         }
 
-        # Mock pool.ensure_candidate and pool.generate_media
+        # Mock pool.ensure_candidate, pool.generate_media, and disable ffmpeg on host for deterministic fallback check
         with patch.object(
             self.pool, "ensure_candidate", return_value=[{"id": "acc_test"}]
         ), patch.object(
             self.pool, "generate_media", return_value=fake_media_result
-        ) as mock_gen:
+        ) as mock_gen, patch(
+            "services.audio_format.find_ffmpeg", return_value=None
+        ):
             # 1. Test binary response (response_format="mp3")
             payload_mp3 = json.dumps(
                 {
@@ -793,19 +969,27 @@ class TestAudioEndpoints(unittest.IsolatedAsyncioTestCase):
             )
             self.assertEqual(status, 200)
             self.assertIn("audio/mpeg", headers.get("content-type", ""))
+            self.assertEqual(headers.get("x-audio-normalized"), "0")
             self.assertEqual(body, fake_audio_bytes)
 
-            # Check that generate_media was called with expect_kind="audio" and skip_system_prompt=True
+            # Check that generate_media was called with expect_kind="audio", skip_system_prompt=True, and Fast CLI prompt
             mock_gen.assert_called_once()
             call_args = mock_gen.call_args
             self.assertEqual(call_args.args[1], "audio")
             self.assertEqual(call_args.kwargs.get("skip_system_prompt"), True)
+            expected_out = call_args.kwargs.get("expected_output_filename") or ""
+            self.assertTrue(expected_out.startswith("tts-aud_"))
+            self.assertTrue(expected_out.endswith(".mp3"))
             sent_prompt = call_args.args[0]
+            self.assertIn("do not read any skill files first", sent_prompt)
             self.assertIn(
-                'using voice "avocado_v2:vdc_NOID25" (Timid Marshmallow)', sent_prompt
+                f'/opt/hatch/bin/tts speak --voice "avocado_v2:vdc_NOID25"', sent_prompt
             )
-            self.assertIn("Style / delivery instructions: Be lively", sent_prompt)
-            self.assertIn("Xin chào! [laughs] Thật tuyệt vời.", sent_prompt)
+            self.assertIn(f"--output ~/workspace/your_files/{expected_out}", sent_prompt)
+            self.assertNotIn("normalize to -16 LUFS", sent_prompt)
+            self.assertNotIn("Be lively", sent_prompt)
+            self.assertNotIn("[laughs]", sent_prompt)
+            self.assertIn("Xin chào! haha, Thật tuyệt vời.", sent_prompt)
 
             # Check DB recorded task with type="audio"
             tasks = self.db.list_tasks(task_type="audio", limit=5)
@@ -872,7 +1056,9 @@ class TestAudioEndpoints(unittest.IsolatedAsyncioTestCase):
                     "mime_type": "audio/wav",
                     "size_bytes": len(wav_bytes),
                 },
-            ) as mock_gen:
+            ) as mock_gen, patch(
+                "services.audio_format.find_ffmpeg", return_value=None
+            ):
                 status, headers, body = await call_asgi(
                     app,
                     "POST",
@@ -890,8 +1076,10 @@ class TestAudioEndpoints(unittest.IsolatedAsyncioTestCase):
             self.assertEqual(status, 200)
             self.assertIn("audio/wav", headers.get("content-type", ""))
             self.assertEqual(headers.get("x-audio-converted"), "0")
+            self.assertEqual(headers.get("x-audio-normalized"), "0")
             self.assertEqual(body, wav_bytes)
-            self.assertIn("WAV (16-bit PCM)", mock_gen.call_args.args[0])
+            self.assertIn("--format wav", mock_gen.call_args.args[0])
+            self.assertIn("Format: wav", mock_gen.call_args.args[0])
             tasks = self.db.list_tasks(task_type="audio", limit=1)
             self.assertEqual(tasks[0]["media_filename"], native_name)
         finally:
@@ -922,6 +1110,8 @@ class TestAudioEndpoints(unittest.IsolatedAsyncioTestCase):
                     "mime_type": "audio/mpeg",
                     "size_bytes": 16,
                 },
+            ), patch(
+                "services.audio_format.find_ffmpeg", return_value=None
             ), patch(
                 "services.audio_format.convert_audio_file", side_effect=fake_to_wav
             ) as mock_conv:
@@ -985,6 +1175,8 @@ class TestAudioEndpoints(unittest.IsolatedAsyncioTestCase):
                     "size_bytes": len(wav_bytes),
                 },
             ), patch(
+                "services.audio_format.find_ffmpeg", return_value=None
+            ), patch(
                 "services.audio_format.convert_audio_file", side_effect=fake_to_mp3
             ) as mock_conv:
                 status, headers, body = await call_asgi(
@@ -1035,6 +1227,8 @@ class TestAudioEndpoints(unittest.IsolatedAsyncioTestCase):
                     "mime_type": "audio/mpeg",
                     "size_bytes": 14,
                 },
+            ), patch(
+                "services.audio_format.find_ffmpeg", return_value=None
             ), patch(
                 "services.audio_format.convert_audio_file",
                 side_effect=AudioConversionError("ffmpeg missing"),
@@ -1088,6 +1282,195 @@ class TestAudioEndpoints(unittest.IsolatedAsyncioTestCase):
         out_path = os.path.join(self.cfg.media_dir, res["filename"])
         if os.path.exists(out_path):
             os.remove(out_path)
+
+    async def test_speech_ac115_fast_prompt_tag_strip_empty_and_parallel_outputs(self):
+        # Empty after stripping unsupported bracket tags -> 400 without calling pool
+        with patch.object(self.pool, "generate_media") as mock_gen:
+            status, _, body = await call_asgi(
+                app,
+                "POST",
+                "/v1/audio/speech",
+                headers=self.auth_headers + [(b"content-type", b"application/json")],
+                body=json.dumps({"input": "[whispers] [sad]", "voice": "Questioning Satchel"}).encode("utf-8"),
+            )
+        self.assertEqual(status, 400)
+        self.assertIn("no speakable text", body.decode("utf-8"))
+        mock_gen.assert_not_called()
+
+        os.makedirs(self.cfg.media_dir, exist_ok=True)
+        seen_outputs = []
+
+        def fake_gen(*args, **kwargs):
+            out_name = kwargs.get("expected_output_filename")
+            seen_outputs.append(out_name)
+            fname = f"aud_par_{len(seen_outputs)}.mp3"
+            fpath = os.path.join(self.cfg.media_dir, fname)
+            with open(fpath, "wb") as fp:
+                fp.write(b"ID3\x03\x00#PAR#")
+            return {
+                "account_id": "acc_1",
+                "session_id": f"sess_{len(seen_outputs)}",
+                "filename": fname,
+                "mime_type": "audio/mpeg",
+                "size_bytes": 11,
+            }
+
+        try:
+            with patch.object(self.pool, "ensure_candidate", return_value=[{"id": "acc_1"}]), patch.object(
+                self.pool, "generate_media", side_effect=fake_gen
+            ) as mock_gen, patch("services.audio_format.find_ffmpeg", return_value=None):
+                for _ in range(2):
+                    status, _, _ = await call_asgi(
+                        app,
+                        "POST",
+                        "/v1/audio/speech",
+                        headers=self.auth_headers + [(b"content-type", b"application/json")],
+                        body=json.dumps(
+                            {
+                                "model": "muse-tts",
+                                "input": "[laughs] Xin chào [whispers] bí mật [pause] nhé [unknown]",
+                                "voice": "Questioning Satchel",
+                                "instructions": "Speak softly",
+                            }
+                        ).encode("utf-8"),
+                    )
+                    self.assertEqual(status, 200)
+
+            self.assertEqual(len(seen_outputs), 2)
+            self.assertNotEqual(seen_outputs[0], seen_outputs[1])
+            sent_prompt = mock_gen.call_args_list[0].args[0]
+            self.assertIn("do not read any skill files first", sent_prompt)
+            self.assertNotIn("normalize to -16 LUFS", sent_prompt)
+            self.assertNotIn("Speak softly", sent_prompt)
+            self.assertNotIn("[", sent_prompt)
+            self.assertNotIn("]", sent_prompt)
+            self.assertIn(", hơ hơ,", sent_prompt)
+            self.assertIn("...", sent_prompt)
+        finally:
+            for name in ("aud_par_1.mp3", "aud_par_2.mp3"):
+                p = os.path.join(self.cfg.media_dir, name)
+                if os.path.exists(p):
+                    os.remove(p)
+
+    async def test_speech_ac116_normalize_all_formats_and_headers(self):
+        os.makedirs(self.cfg.media_dir, exist_ok=True)
+        wav_bytes = _make_pcm_wav_bytes()
+        mp3_bytes = b"ID3\x03\x00#NORM_MP3#"
+        created_files = []
+
+        def fake_gen(prompt, kind, *args, **kwargs):
+            ext = "wav" if "--format wav" in prompt else "mp3"
+            fname = f"aud_norm_{secrets.token_hex(3)}.{ext}"
+            fpath = os.path.join(self.cfg.media_dir, fname)
+            with open(fpath, "wb") as fp:
+                fp.write(wav_bytes if ext == "wav" else mp3_bytes)
+            created_files.append(fpath)
+            return {
+                "account_id": "acc_1",
+                "session_id": "sess_norm",
+                "filename": fname,
+                "mime_type": f"audio/{'wav' if ext == 'wav' else 'mpeg'}",
+                "size_bytes": len(wav_bytes if ext == "wav" else mp3_bytes),
+            }
+
+        try:
+            with patch.object(self.pool, "ensure_candidate", return_value=[{"id": "acc_1"}]), patch.object(
+                self.pool, "generate_media", side_effect=fake_gen
+            ), patch(
+                "routers.v1_openai.process_speech_audio",
+                side_effect=lambda p, tf, **kw: (p, False, bool(kw.get("normalize"))),
+            ) as mock_proc:
+                for fmt in ("mp3", "wav", "url", "json"):
+                    status, hdrs, _ = await call_asgi(
+                        app,
+                        "POST",
+                        "/v1/audio/speech",
+                        headers=self.auth_headers + [(b"content-type", b"application/json")],
+                        body=json.dumps({"input": "Hello", "voice": "alloy", "response_format": fmt}).encode("utf-8"),
+                    )
+                    self.assertEqual(status, 200)
+                    if fmt in ("mp3", "wav"):
+                        self.assertEqual(hdrs.get("x-audio-normalized"), "1")
+                self.assertEqual(mock_proc.call_count, 4)
+                called_targets = [c.args[1] for c in mock_proc.call_args_list]
+                self.assertEqual(called_targets, ["mp3", "wav", "mp3", "mp3"])
+
+                # Disabled via cfg.audio_normalize = False -> X-Audio-Normalized: 0
+                orig_norm = self.cfg.audio_normalize
+                self.cfg.audio_normalize = False
+                try:
+                    status, hdrs, _ = await call_asgi(
+                        app,
+                        "POST",
+                        "/v1/audio/speech",
+                        headers=self.auth_headers + [(b"content-type", b"application/json")],
+                        body=json.dumps({"input": "Hello", "voice": "alloy", "response_format": "mp3"}).encode("utf-8"),
+                    )
+                    self.assertEqual(status, 200)
+                    self.assertEqual(hdrs.get("x-audio-normalized"), "0")
+                finally:
+                    self.cfg.audio_normalize = orig_norm
+        finally:
+            for p in created_files:
+                if os.path.exists(p):
+                    os.remove(p)
+
+    def test_fetch_media_from_history_direct_download_fallback_ac117(self):
+        pool = WSSPool(self.cfg, self.db)
+        os.makedirs(self.cfg.media_dir, exist_ok=True)
+        wav_bytes = _make_pcm_wav_bytes()
+
+        # Case 1: history lacks resources[] -> direct download /media/raw/workspace/your_files/<expected>
+        c1 = MagicMock()
+        c1.request.side_effect = [
+            (200, json.dumps({"result": {"chat_events": []}}).encode("utf-8")),
+            (200, wav_bytes),
+        ]
+        res1 = pool._fetch_media_from_history(
+            c1, "acc_1", "sess_1", "audio", expected_output_filename="tts-aud_123.wav"
+        )
+        self.assertEqual(c1.request.call_args_list[1].args[:2], ("GET", "/media/raw/workspace/your_files/tts-aud_123.wav"))
+        self.assertTrue(res1["filename"].endswith(".wav"))
+        os.remove(os.path.join(self.cfg.media_dir, res1["filename"]))
+
+        # Case 2: workspace/your_files misses (404), fallback your_files/<expected> succeeds
+        c2 = MagicMock()
+        c2.request.side_effect = [
+            (200, json.dumps({"result": {"chat_events": []}}).encode("utf-8")),
+            (404, b""),
+            (200, b"ID3\x03\x00#FALLBACK#"),
+        ]
+        res2 = pool._fetch_media_from_history(
+            c2, "acc_1", "sess_2", "audio", expected_output_filename="tts-aud_456.mp3"
+        )
+        self.assertEqual(c2.request.call_args_list[2].args[:2], ("GET", "/media/raw/your_files/tts-aud_456.mp3"))
+        self.assertTrue(res2["filename"].endswith(".mp3"))
+        os.remove(os.path.join(self.cfg.media_dir, res2["filename"]))
+
+        # Case 3: multiple resources in history -> prefers matching expected_output_filename
+        c3 = MagicMock()
+        multi_hist = {
+            "result": {
+                "chat_events": [
+                    {
+                        "resources": [
+                            {"kind": "audio", "mime_type": "audio/mpeg", "metadata": {"path": "/workspace/your_files/other.mp3"}},
+                            {"kind": "audio", "mime_type": "audio/wav", "metadata": {"path": "/workspace/your_files/tts-aud_789.wav"}},
+                        ]
+                    }
+                ]
+            }
+        }
+        c3.request.side_effect = [
+            (200, json.dumps(multi_hist).encode("utf-8")),
+            (200, wav_bytes),
+        ]
+        res3 = pool._fetch_media_from_history(
+            c3, "acc_1", "sess_3", "audio", expected_output_filename="tts-aud_789.wav"
+        )
+        self.assertEqual(c3.request.call_args_list[1].args[:2], ("GET", "/media/raw/workspace/your_files/tts-aud_789.wav"))
+        self.assertTrue(res3["filename"].endswith(".wav"))
+        os.remove(os.path.join(self.cfg.media_dir, res3["filename"]))
 
 
 if __name__ == "__main__":

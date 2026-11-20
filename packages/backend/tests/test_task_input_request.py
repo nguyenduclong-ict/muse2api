@@ -143,13 +143,28 @@ class TestTaskInputRequestStorage(unittest.TestCase):
         media_file = os.path.join(self.cfg.media_dir, "img_1.png")
         with open(media_file, "wb") as f:
             f.write(b"fake-media-bytes")
-        pool.generate_media.return_value = {
-            "account_id": "acc_1",
-            "session_id": "sess_1",
-            "filename": "img_1.png",
-            "file_path": media_file,
-            "size_bytes": 16,
-        }
+        audio_file = os.path.join(self.cfg.media_dir, "aud_1.mp3")
+        with open(audio_file, "wb") as f:
+            f.write(b"ID3\x03\x00fake-audio-bytes")
+
+        def fake_generate_media(prompt, expect_kind="image", *args, **kwargs):
+            if expect_kind == "audio":
+                return {
+                    "account_id": "acc_1",
+                    "session_id": "sess_1",
+                    "filename": "aud_1.mp3",
+                    "file_path": audio_file,
+                    "size_bytes": 21,
+                }
+            return {
+                "account_id": "acc_1",
+                "session_id": "sess_1",
+                "filename": "img_1.png",
+                "file_path": media_file,
+                "size_bytes": 16,
+            }
+
+        pool.generate_media.side_effect = fake_generate_media
 
         app.state.cfg = self.cfg
         app.state.db = db

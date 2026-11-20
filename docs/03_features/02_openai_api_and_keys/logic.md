@@ -9,12 +9,16 @@ sequenceDiagram
     participant Guard as Ref Media & SSRF Guard
     participant Pool as WSS Pool (LRU)
     participant VM as Muse Cloud VM (/v1/noise)
+    participant AudioFmt as Local Audio Pipeline (ffmpeg)
 
     App->>API: POST /v1/* (Bearer m2a_...)
     API->>API: Verify raw_key in SQLite api_keys
     opt Có URL / Base64 / Multipart tham chiếu
         API->>Guard: Validate & fetch media (no private IP, <=10 items, <=40MiB/100MiB)
         Guard-->>API: list[(bytes, mime_type)]
+    end
+    opt Audio TTS (/v1/audio/speech)
+        API->>API: preprocess_speech_text() + build Fast CLI prompt (tts-<task_id>.<ext>)
     end
     API->>Pool: ensure_candidate(capability) / acquire_healthy_account(capability)
     alt Không có tài khoản hỗ trợ / hết quota
@@ -31,12 +35,21 @@ sequenceDiagram
     end
     opt Media Output (Image / Video / Audio)
         Pool->>VM: GET /chat/history?session_id=...
-        VM-->>Pool: resources[].path (/workspace/imagine_media/... hoặc audio .mp3)
-        Pool->>VM: GET /media/raw/<path>
+        alt Có resource trong history
+            VM-->>Pool: resources[].path (/workspace/imagine_media/... hoặc your_files/tts-*.mp3)
+            Pool->>VM: GET /media/raw/<path>
+        else Audio chưa có resources[] trong history
+            Pool->>VM: Direct fallback GET /media/raw/workspace/your_files/<expected_output_filename>
+            Pool->>VM: Fallback GET /media/raw/your_files/<expected_output_filename>
+        end
         VM-->>Pool: Binary BodyChunks
         Pool->>Pool: Save to data/media/<filename>
     end
-    API-->>App: Final JSON / Binary audio/mpeg / Media URL (/v1/media/<filename>)
+    opt Audio TTS (/v1/audio/speech — mp3 / wav / url / json)
+        API->>AudioFmt: process_speech_audio(path, target_fmt, normalize=cfg.audio_normalize)
+        AudioFmt-->>API: (final_path, converted, normalized) + update tasks.media_filename
+    end
+    API-->>App: Final JSON (url/json) hoặc Binary audio (X-Audio-Converted, X-Audio-Normalized)
 ```
 
 ## 2. UI Event Handlers
@@ -85,38 +98,73 @@ sequenceDiagram
    - `POST /v1/audio/speech`:
      - Phân giải `voice_info = resolve_voice(body.voice)` (trả `400` nếu không tồn tại trong catalog).
      - Nếu `allowed_languages` khác rỗng và `get_voice_language_group(voice_info).lower() not in allowed_languages`: trả ngay `400 Bad Request` (`invalid_request_error`) nêu rõ giọng `{voice_info['name']}` thuộc ngôn ngữ `{lang_group}` hiện không nằm trong danh sách ngôn ngữ được bật trong Settings (không fallback ngay cả khi client bỏ trống `voice`).
-5. **Xây dựng Prompt TTS, Trích xuất Audio từ Muse & Fallback Convert (`BR-107`, `BR-108`):**
-   - Validate `input` (`1 <= len(input.strip()) <= 4096`) và `response_format.lower() in {"mp3", "wav", "url", "json"}`; nếu sai trả `400`.
-   - Ghép prompt TTS theo template chuẩn trong `services/voice_preview.py::build_speech_prompt` (truyền `skip_system_prompt=True` khi gọi `wss_pool.generate_media(..., expect_kind="audio")` và `output_format="wav"` nếu `response_format == "wav"`, mặc định `"mp3"`):
-     ```text
-     Generate {an MP3 | a WAV (16-bit PCM)} audio speech file using voice "{voice_id}" ({voice_name}).
-     Language: {language_code}. Speed: {speed_pct}.
-     Audio output: normalize to -16 LUFS, true peak max -1.5 dB, do not clip.
-     Style / delivery instructions: {instructions}  # chỉ thêm khi instructions không rỗng
+5. **Xây dựng Fast Prompt TTS, Tiền xử lý Tag, Tải Audio Fallback & Chuẩn hóa Âm lượng Cục bộ (`BR-107`, `BR-108`):**
+   - **Kiểm tra đầu vào cơ bản:** `input` sau trim có độ dài `1..4096` ký tự và `response_format.lower() in {"mp3", "wav", "url", "json"}`; sai trả `400`.
+   - **Tiền xử lý bracket tags cục bộ (`services/voice_preview.py::preprocess_speech_text(text: str, language: str) -> str`):**
+     - Khớp mọi biểu thức dạng `[...]` không phân biệt hoa/thường (bỏ khoảng trắng thừa bên trong ngoặc trước khi đối chiếu bảng mapping):
+       - Ngôn ngữ `"vi"`: `[laughs]` → `, hơ hơ,`; `[chuckles]`, `[giggles]` → `, hơ hơ,`; `[clears throat]` → `, ừm,`; `[sneezes]` → `Hắt xì!`.
+       - Ngôn ngữ khác `"vi"`: `[laughs]` → `, haha,`; `[chuckles]`, `[giggles]` → `, heh,`; `[clears throat]` → `, hmm,`; `[sneezes]` → `Achoo!`.
+       - Dùng chung mọi ngôn ngữ: `[sighs]` → `Haiz...`; `[gasps]` → `Huh!`; `[coughs]` → `Hm hm!`; `[pause]`, `[long pause]` → `...`.
+       - Mọi `[tag]` khác (`[whispers]`, `[shouts]`, `[angry]`, `[sad]`, `[happy]`, `[excited]`, tag lạ): xóa bỏ hoàn toàn (`""`).
+     - Sau khi thay/xóa, dọn khoảng trắng ngang liên tiếp, tránh khoảng trắng trước dấu phẩy (` , `) hoặc dấu phẩy lặp (`,,` / dấu phẩy mở đầu câu sau khi xóa tag đầu dòng), nhưng giữ nguyên ngắt dòng giữa các đoạn văn.
+     - Nếu `preprocess_speech_text(...)` trả chuỗi rỗng sau trim (ví dụ `input="[whispers]"`), trả ngay `400 Bad Request` (`invalid_request_error`).
+   - **Template Fast Prompt (`services/voice_preview.py::build_speech_prompt(..., output_filename: str | None = None)`):**
+     - Tạo `task_id = f"aud_{secrets.token_hex(6)}"` trước khi dựng prompt; xác định `target_fmt = "wav" if fmt == "wav" else "mp3"` và tên file duy nhất `output_filename = f"tts-{task_id}.{target_fmt}"` (sanitize qua `os.path.basename` / chỉ cho phép `[a-zA-Z0-9._-]`, fallback sinh `tts-<hex>.<fmt>` nếu trống).
+     - `language_code = get_voice_language_code(voice_info)` (mặc định `en`); `speed_pct` quy đổi hệ số `speed` sang phần trăm (mặc định `100`, vd `1.25` → `125`).
+     - Tham số `instructions` được nhận ở schema API nhưng **bỏ qua** ở Fast Path (không chèn vào prompt và không fallback sang prompt đọc skill).
+     - Ghép prompt nguyên văn theo mẫu sau (gửi với `skip_system_prompt=True`):
+       ```text
+       Generate an audio speech file using this exact command, do not read any skill files first:
 
-     Do NOT read any bracket tags literally. Convert them to spoken sounds or delivery cues first (keep sounds lowercase and comma-separated, without exclamation marks, so delivery stays soft and natural):
-     - [laughs] → ", hơ hơ," (vi) / ", haha," (khác)
-     - [chuckles], [giggles] → ", hơ hơ," (vi) / ", heh," (khác)
-     - [clears throat] → ", ừm," (vi) / ", hmm," (khác)
-     - [sneezes] → "Hắt xì!" (vi) / "Achoo!" (khác)
-     - [sighs] → "Haiz..."
-     - [gasps] → "Huh!"
-     - [coughs] → "Hm hm!"
-     - [pause], [long pause] → "..." (brief / longer pause)
-     - [whispers] → read the following words slowly and quietly
-     - [shouts] → read faster and louder with emphasis
-     - [angry], [sad], [happy], [excited] → adjust pacing and tone to match the mood
-     - Any other [tag] → omit the tag, do not speak it literally
+       /opt/hatch/bin/tts speak --voice "{voice_id}" --language {lang} --speed {speed_pct} --format {fmt} --output ~/workspace/your_files/{safe_output_filename} --text-stdin
 
-     Then speak this text with the converted sounds in place, don't ask any more questions:
-     "{input}"
-     ```
-     Trong đó `language_code` được ánh xạ từ `get_voice_language_code(voice_info)` (mặc định `en`), và `speed_pct` quy đổi hệ số `speed` sang phần trăm (mặc định `100`, ví dụ `1.25` → `125`).
-   - Trong `WSSPool._fetch_media_from_history(..., expect_kind="audio")`:
-     - Ưu tiên chọn resource có `kind` chứa `"audio"` hoặc `mime_type` bắt đầu bằng `"audio/"` hoặc đuôi path thuộc `{".mp3", ".wav", ".ogg", ".m4a"}`; đồng thời kiểm tra cả `payload.data.audios` / `payload.data.audio` / `payload.data.files` nếu có.
-     - Mặc định phần mở rộng `.mp3` (`mime_type = "audio/mpeg"`), lưu vào `data/media/aud_<hex>.<ext>`.
-   - Xác thực định dạng thực tế & fallback `ffmpeg` trong `services/audio_format.py::ensure_audio_file_format` (chỉ áp dụng khi `response_format` là `"mp3"` hoặc `"wav"`):
-     - Kiểm tra magic bytes / header thực tế: với `"wav"` phải là `RIFF...WAVE` nén `NONE` 16-bit PCM (`is_pcm16_wav`); với `"mp3"` phải có header `ID3` hoặc MPEG audio sync frame hợp lệ (`detect_audio_format == "mp3"`).
-     - Nếu khớp định dạng đích (và nếu lệch đuôi file thì đổi tên nguyên tử sang `.<fmt>`), không chạy `ffmpeg` (`X-Audio-Converted: 0`).
-     - Nếu không khớp (ví dụ yêu cầu `wav` nhưng Muse trả `.mp3` hoặc WAV khác 16-bit PCM), gọi `ffmpeg` transcode nguyên tử qua file `.tmp` (`pcm_s16le` cho `wav`, `libmp3lame` cho `mp3`), xóa file nguồn cũ khác tên và trả `X-Audio-Converted: 1`; cập nhật `tasks.media_filename` trong SQLite theo tên file cuối cùng.
-   - Với `response_format` là `"mp3"` hoặc `"wav"`, trả `FileResponse` binary kèm `Content-Type` tương ứng (`audio/mpeg` hoặc `audio/wav`), `X-Muse-Media-Url: /v1/media/<filename>` và `X-Audio-Converted: 0|1`; với `"url"` hoặc `"json"`, trả JSON metadata kèm đường dẫn đầy đủ.
+       Voice: {voice_name} ({voice_id})
+       Language: {lang}
+       Speed: {speed_pct}
+       Format: {fmt}
+
+       Text to speak (already converted, read exactly as written, no bracket tags left):
+       {processed_text}
+       ```
+   - **Trích xuất Audio từ Muse & Direct Download Fallback (`WSSPool.generate_media` / `_fetch_media_from_history`):**
+     - `generate_media(..., expected_output_filename: str | None = None)` truyền tên file kỳ vọng xuống `_fetch_media_from_history`.
+     - Tại mỗi lượt kiểm tra `/chat/history`:
+       1. Tìm trong `chat_events` (`resources[]` và `payload.data.audios/audio/files/...`) resource có `kind` chứa `"audio"` hoặc `mime_type` `audio/*` hoặc đuôi `.mp3`/`.wav`/`.ogg`/`.m4a`; nếu có nhiều mục, ưu tiên mục có path kết thúc bằng `expected_output_filename`.
+       2. Nếu tìm thấy, tải qua `GET /media/raw/<media_path>`.
+       3. Nếu lượt kiểm tra `/chat/history` chưa thấy resource audio nào và `expected_output_filename` khác rỗng, thử tải trực tiếp lần lượt:
+          - `GET /media/raw/workspace/your_files/{expected_output_filename}`
+          - `GET /media/raw/your_files/{expected_output_filename}`
+          Nếu một trong hai trả `200 OK` với dữ liệu binary khác rỗng, lưu ngay vào `data/media/aud_<hex>.<ext>` mà không phải đợi retry hay báo lỗi `No audio resource produced`.
+       4. Chỉ khi cả `/chat/history` lẫn direct fallback đều chưa có file mới `time.sleep(0.8)` rồi thử lại (tối đa 3 lượt).
+   - **Pipeline hậu xử lý âm thanh cục bộ (`services/audio_format.py::process_speech_audio`):**
+     - Signature: `process_speech_audio(file_path: str, target_format: str, *, normalize: bool = True, target_lufs: float = -16.0, true_peak: float = -1.5, lra: float = 11.0) -> tuple[str, bool, bool]` trả về `(final_path, was_converted, was_normalized)`.
+     - Bước 1 — Kiểm tra định dạng: xác định `needs_convert = not matches_target_format(data, target_fmt)` (`RIFF...WAVE` PCM 16-bit cho `wav`; `ID3` hoặc MPEG sync frame cho `mp3`).
+     - Bước 2 — Nếu `not normalize`:
+       - Nếu `not needs_convert`: đổi tên nguyên tử sang `.<target_fmt>` nếu lệch phần mở rộng và trả `(dst_path, False, False)`.
+       - Nếu `needs_convert`: gọi `convert_audio_file` (`pcm_s16le` hoặc `libmp3lame -qscale:a 2`), xóa nguồn cũ nếu khác tên và trả `(dst_path, True, False)`.
+     - Bước 3 — Nếu `normalize == True`:
+       - Tìm `ffmpeg` (`find_ffmpeg()`). Nếu không có `ffmpeg`:
+         - Nếu `needs_convert`: ném `AudioConversionError` (router trả `502`).
+         - Nếu `not needs_convert`: ghi log `WARNING`, đổi tên nguyên tử sang `.<target_fmt>` nếu cần và trả `(dst_path, False, False)` (Graceful fallback).
+       - Chạy Pass 1 đo thông số loudness:
+         `ffmpeg -y -hide_banner -i <src_path> -af loudnorm=I={target_lufs}:TP={true_peak}:LRA={lra}:print_format=json -f null -`
+       - Xác định sample rate gốc `orig_sr`: ưu tiên đọc `wf.getframerate()` qua `wave.open` nếu đầu vào là WAV hợp lệ; ngược lại parse regex `(\d+)\s+Hz` từ `stderr` của Pass 1 (tránh chạy thêm tiến trình `ffprobe`).
+       - Phân tích khối JSON từ `stderr` của Pass 1:
+         - Nếu `input_i == "-inf"` (clip im lặng hoàn toàn): bỏ qua `loudnorm` (`normalized=False`); chỉ convert nếu `needs_convert`, ngược lại giữ file gốc (`(dst_path, False, False)`).
+         - Nếu parse đủ `input_i`, `input_tp`, `input_lra`, `input_thresh`, `target_offset`: dựng bộ lọc Pass 2 2-pass linear:
+           `loudnorm=I={target_lufs}:TP={true_peak}:LRA={lra}:measured_I={...}:measured_TP={...}:measured_LRA={...}:measured_thresh={...}:offset={...}:linear=true:print_format=summary`
+         - Nếu không parse được JSON Pass 1 (nhưng không im lặng): fallback sang bộ lọc 1-pass `loudnorm=I={target_lufs}:TP={true_peak}:LRA={lra}`.
+       - Chạy Pass 2 (gộp convert + normalize trong **1 lần encode duy nhất** qua file `.tmp` rồi `os.replace()`):
+         - Luôn truyền `-ar {orig_sr}` (nếu xác định được `orig_sr > 0`) để ngăn `loudnorm` upsample nội bộ lên `192000 Hz`.
+         - Codec đích: `pcm_s16le -f wav` (với `wav`) hoặc `libmp3lame -qscale:a 2 -f mp3` (với `mp3`).
+       - Nếu Pass 1 hoặc Pass 2 lỗi thực thi `ffmpeg`: nếu `needs_convert` thì ném `AudioConversionError`; nếu `not needs_convert` thì ghi `WARNING` và fallback giữ file gốc (`(dst_path, False, False)`).
+       - Khi ghi đích thành công, xóa file nguồn cũ nếu đường dẫn khác `dst_path`, trả `(dst_path, needs_convert, True)`.
+   - **Cấu hình biến môi trường (`packages/backend/config.py` & `.env.example`):**
+     - `MUSE2API_AUDIO_NORMALIZE`: mặc định `"1"` (`bool`, bật chuẩn hóa cục bộ).
+     - `MUSE2API_AUDIO_TARGET_LUFS`: mặc định `"-16.0"` (`float`).
+     - `MUSE2API_AUDIO_TRUE_PEAK`: mặc định `"-1.5"` (`float`).
+     - `MUSE2API_AUDIO_LRA`: mặc định `"11.0"` (`float`).
+   - **Hoàn tất phản hồi tại `POST /v1/audio/speech`:**
+     - Áp dụng `process_speech_audio` với `target_fmt = "wav" if fmt == "wav" else "mp3"` cho **cả 4 chế độ** `response_format` (`mp3`, `wav`, `url`, `json`).
+     - Cập nhật `tasks.media_filename` trong SQLite và `final_size` theo tệp sau xử lý.
+     - Với `mp3`/`wav`, trả `FileResponse` (`audio/mpeg` hoặc `audio/wav`) kèm header `X-Muse-Media-Url: /v1/media/<filename>`, `X-Audio-Converted: 0|1`, và `X-Audio-Normalized: 0|1`. Với `url`/`json`, trả JSON metadata trỏ tới `/v1/media/<filename>` đã chuẩn hóa.

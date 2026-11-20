@@ -109,6 +109,18 @@ class Config:
     log_level: str = field(
         default_factory=lambda: (_env("MUSE2API_LOG_LEVEL", "INFO").strip().upper() or "INFO")
     )
+    audio_normalize: bool = field(
+        default_factory=lambda: _env("MUSE2API_AUDIO_NORMALIZE", "1").strip().lower() in ("1", "true", "yes", "on")
+    )
+    audio_target_lufs: float = field(
+        default_factory=lambda: _env_float("MUSE2API_AUDIO_TARGET_LUFS", -16.0, -70.0, -5.0)
+    )
+    audio_true_peak: float = field(
+        default_factory=lambda: _env_float("MUSE2API_AUDIO_TRUE_PEAK", -1.5, -9.0, 0.0)
+    )
+    audio_lra: float = field(
+        default_factory=lambda: _env_float("MUSE2API_AUDIO_LRA", 11.0, 1.0, 50.0)
+    )
 
     @property
     def db_path(self) -> str:

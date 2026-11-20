@@ -19,3 +19,4 @@
 | `015` | Split English Voice Languages by Country (31 Canonical Groups) | [04_settings_and_cleanup](../03_features/04_settings_and_cleanup/spec.md), [02_openai_api_and_keys](../03_features/02_openai_api_and_keys/spec.md) | `Completed` | 100% |
 | `016` | API Playground & Voice Preview Cache | [06_api_playground](../03_features/06_api_playground/spec.md) | `Completed` | 100% |
 | `017` | Lưu Input Request của các Task & Modal xem chi tiết | [03_tasks_and_media](../03_features/03_tasks_and_media/spec.md) | `Completed` | 100% |
+| `018` | Tối ưu TTS Fast CLI Prompt & Chuẩn hóa âm lượng cục bộ (`ffmpeg loudnorm`) | [02_openai_api_and_keys](../03_features/02_openai_api_and_keys/spec.md), [06_api_playground](../03_features/06_api_playground/spec.md) | `Completed` | 100% |

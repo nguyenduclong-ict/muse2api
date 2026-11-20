@@ -19,12 +19,14 @@ from pydantic import BaseModel, Field
 from auth import require_v1_api_key
 from services.audio_format import (
     AUDIO_MEDIA_TYPES,
-    BINARY_SPEECH_FORMATS,
     SUPPORTED_SPEECH_FORMATS,
-    ensure_audio_file_format,
+    process_speech_audio,
 )
 from services.ref_media import RefMediaError, load_reference_list
-from services.voice_preview import build_speech_prompt as _build_speech_prompt
+from services.voice_preview import (
+    build_speech_prompt as _build_speech_prompt,
+    preprocess_speech_text as _preprocess_speech_text,
+)
 from services.voices import (
     get_voice_language_code,
     get_voice_language_group,
@@ -872,19 +874,36 @@ async def create_speech(body: SpeechReq, request: Request):
             },
         )
 
+    lang_code = get_voice_language_code(voice_info)
+    processed_text = _preprocess_speech_text(text, lang_code)
+    if not processed_text:
+        raise HTTPException(
+            status_code=400,
+            detail={
+                "error": {
+                    "message": "input has no speakable text left after removing unsupported bracket tags",
+                    "type": "invalid_request_error",
+                }
+            },
+        )
+
     _ensure_capability_or_503(pool, "speech")
 
+    timeout = float(body.timeout or 180)
+    task_id = f"aud_{secrets.token_hex(6)}"
+    target_fmt = "wav" if fmt == "wav" else "mp3"
+    output_filename = f"tts-{task_id}.{target_fmt}"
     prompt = _build_speech_prompt(
-        text=text,
+        text=processed_text,
         voice_id=voice_info["id"],
         voice_name=voice_info["name"],
         instructions=body.instructions,
         speed=body.speed,
-        language=get_voice_language_code(voice_info),
-        output_format="wav" if fmt == "wav" else "mp3",
+        language=lang_code,
+        output_format=target_fmt,
+        output_filename=output_filename,
+        already_preprocessed=True,
     )
-    timeout = float(body.timeout or 180)
-    task_id = f"aud_{secrets.token_hex(6)}"
     db.create_task(
         task_id,
         "audio",
@@ -904,17 +923,26 @@ async def create_speech(body: SpeechReq, request: Request):
             timeout,
             skip_system_prompt=True,
             on_account_selected=lambda aid, sid: db.update_task(task_id, account_id=aid, session_id=sid),
+            expected_output_filename=output_filename,
         )
         final_filename = res["filename"]
         file_path = os.path.join(cfg.media_dir, final_filename)
         final_size = res.get("size_bytes", res.get("bytes", 0))
         converted = False
+        normalized = False
 
-        if fmt in BINARY_SPEECH_FORMATS:
-            file_path, converted = await run_in_threadpool(ensure_audio_file_format, file_path, fmt)
-            final_filename = os.path.basename(file_path)
-            if os.path.isfile(file_path):
-                final_size = os.path.getsize(file_path)
+        file_path, converted, normalized = await run_in_threadpool(
+            process_speech_audio,
+            file_path,
+            target_fmt,
+            normalize=cfg.audio_normalize,
+            target_lufs=cfg.audio_target_lufs,
+            true_peak=cfg.audio_true_peak,
+            lra=cfg.audio_lra,
+        )
+        final_filename = os.path.basename(file_path)
+        if os.path.isfile(file_path):
+            final_size = os.path.getsize(file_path)
 
         db.update_task(
             task_id,
@@ -946,6 +974,7 @@ async def create_speech(body: SpeechReq, request: Request):
                 "Cache-Control": "public, max-age=86400",
                 "X-Muse-Media-Url": media_url,
                 "X-Audio-Converted": "1" if converted else "0",
+                "X-Audio-Normalized": "1" if normalized else "0",
             },
         )
     except NoCandidateAccountError as exc:
