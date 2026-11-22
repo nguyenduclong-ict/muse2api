@@ -123,6 +123,7 @@ class SpeechReq(BaseModel):
     model: str = "muse-tts"
     input: str
     voice: str | None = None
+    language: str | None = None
     instructions: str | None = None
     speed: float | None = None
     response_format: str = "mp3"
@@ -726,6 +727,7 @@ def get_audio_voices(
     preview_svc = getattr(request.app.state, "voice_preview", None)
     enriched = []
     for v in voices:
+        lang_code = get_voice_language_code(v)
         lang_group = get_voice_language_group(v)
         preview_url = f"{base}/v1/audio/voices/{v['id']}/preview"
         if has_multiple_language_groups(v["id"]):
@@ -736,7 +738,8 @@ def get_audio_voices(
             "gender": v["gender"],
             "accent": v["accent"],
             "tone": v["tone"],
-            "language": v["language"],
+            "language": lang_code,
+            "tts_lang": lang_code,
             "language_group": lang_group,
             "description": v.get("description", ""),
             "long_description": v.get("long_description", ""),
@@ -761,15 +764,15 @@ async def preview_voice(
     if not preview_svc:
         raise HTTPException(status_code=500, detail="Voice preview service unavailable")
 
+    allowed_langs = _get_allowed_voice_languages(db)
     raw_voice = voice_id.strip()
-    voice_info = resolve_voice(raw_voice, language=language)
+    voice_info = resolve_voice(raw_voice, language=language, allowed_languages=allowed_langs)
     if not voice_info:
         raise HTTPException(
             status_code=400,
             detail={"error": {"message": f"Voice '{raw_voice}' not found. See GET /v1/audio/voices for available voices.", "type": "invalid_request_error"}},
         )
 
-    allowed_langs = _get_allowed_voice_languages(db)
     if allowed_langs and not is_voice_allowed(voice_info, allowed_langs):
         v_group = get_voice_language_group(voice_info)
         raise HTTPException(
@@ -850,7 +853,7 @@ async def create_speech(body: SpeechReq, request: Request):
         )
 
     allowed_langs = _get_allowed_voice_languages(db)
-    voice_info = resolve_voice(body.voice)
+    voice_info = resolve_voice(body.voice, language=body.language, allowed_languages=allowed_langs)
     if not voice_info:
         v_name = body.voice or ""
         raise HTTPException(

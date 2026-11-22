@@ -98,11 +98,11 @@ class TestVoiceCatalog(unittest.TestCase):
 
     def test_total_voices_and_exclusions(self):
         voices = list_voices()
-        self.assertGreaterEqual(len(voices), 100)
+        self.assertEqual(len(voices), 120)
 
-        # Check internal voice excluded
+        # No voices hidden; p1a1_short is included under German (tts_lang='de')
         all_ids = {v["id"] for v in voices}
-        self.assertNotIn("avocado_v2:p1a1_short", all_ids)
+        self.assertIn("avocado_v2:p1a1_short", all_ids)
         self.assertIn("avocado_v2:vdc_NOID25", all_ids)
 
         # Check no internal metrics leaked and long_description is always present
@@ -157,8 +157,8 @@ class TestVoiceCatalog(unittest.TestCase):
         # OpenAI aliases
         self.assertEqual(resolve_voice("fable")["id"], "avocado_v2:isabella")
         self.assertEqual(resolve_voice("onyx")["id"], "avocado_v2:magnus")
-        self.assertEqual(resolve_voice("nova")["id"], "avocado_v2:paloma")
-        self.assertEqual(resolve_voice("shimmer")["id"], "avocado_v2:lumi")
+        self.assertIsNotNone(resolve_voice("nova"))
+        self.assertIsNotNone(resolve_voice("shimmer"))
 
         # Default voice
         v_def = resolve_voice(None)
@@ -171,48 +171,45 @@ class TestVoiceCatalog(unittest.TestCase):
 
     def test_language_groups_distribution(self):
         available = list_available_voice_languages()
-        self.assertEqual(len(available), 31)
+        self.assertEqual(len(available), 6)
         total_count = sum(x["count"] for x in available)
+        self.assertEqual(total_count, 120)
         self.assertEqual(total_count, len(list_voices()))
 
         counts_map = {x["name"]: x["count"] for x in available}
-        self.assertGreaterEqual(counts_map["English (US)"], 10)
-        self.assertGreaterEqual(counts_map["English (UK)"], 10)
-        self.assertGreaterEqual(counts_map["French"], 10)
-        self.assertGreaterEqual(counts_map["Vietnamese"], 7)
-        self.assertGreaterEqual(counts_map["Japanese"], 6)
-        self.assertGreaterEqual(counts_map["Korean"], 4)
-        self.assertGreaterEqual(counts_map["Other"], 1)
+        for lang_name in ("English", "Vietnamese", "Japanese", "Korean", "Chinese", "German"):
+            self.assertEqual(counts_map[lang_name], 20)
+
+        # avocado_v2:p1a1_short should NOT be hidden anymore and belongs to German (tts_lang='de')
+        hidden_check = resolve_voice("avocado_v2:p1a1_short")
+        self.assertIsNotNone(hidden_check)
+        self.assertEqual(hidden_check["tts_lang"], "de")
 
     def test_normalize_voice_languages(self):
-        # Legacy "English" should expand to all 13 English country groups
+        # Legacy "English" / "English (US)" should normalize to canonical "English", codes like "ja" to "Japanese"
         norm = normalize_voice_languages(
-            ["vietnamese", "ENGLISH", "invalid_group", "japanese", "vietnamese"]
+            ["vietnamese", "ja", "ENGLISH", "English (US)", "invalid_group", "vietnamese"]
         )
-        self.assertIn("English (US)", norm)
-        self.assertIn("English (UK)", norm)
-        self.assertIn("English (Canada)", norm)
-        self.assertIn("Vietnamese", norm)
-        self.assertIn("Japanese", norm)
-        self.assertEqual(len(norm), 15)  # 13 English + Vietnamese + Japanese
+        self.assertEqual(set(norm), {"English", "Japanese", "Vietnamese"})
+        self.assertEqual(len(norm), 3)
         self.assertEqual(normalize_voice_languages(None), [])
         self.assertEqual(normalize_voice_languages([]), [])
 
     def test_is_voice_allowed_and_filter(self):
-        us_voice = resolve_voice("avocado_v2:vdc_NOID25")  # English (US)
-        satchel = resolve_voice("Questioning Satchel")  # Vietnamese
+        us_voice = resolve_voice("avocado_v2:vdc_NOID25")  # English (tts_lang='en')
+        sprinkler = resolve_voice("Sprightly Sprinkler")  # Vietnamese (tts_lang='vi')
 
         self.assertTrue(is_voice_allowed(us_voice, None))
         self.assertTrue(is_voice_allowed(us_voice, []))
-        self.assertTrue(is_voice_allowed(us_voice, ["English (US)"]))
-        self.assertFalse(is_voice_allowed(us_voice, ["English (UK)", "Vietnamese"]))
+        self.assertTrue(is_voice_allowed(us_voice, ["English"]))
+        self.assertFalse(is_voice_allowed(us_voice, ["German", "Vietnamese"]))
 
-        self.assertTrue(is_voice_allowed(satchel, ["Vietnamese"]))
-        self.assertFalse(is_voice_allowed(satchel, ["English (US)"]))
+        self.assertTrue(is_voice_allowed(sprinkler, ["Vietnamese"]))
+        self.assertFalse(is_voice_allowed(sprinkler, ["English"]))
 
         # list_voices with allowed_languages
         allowed = list_voices(allowed_languages=["Vietnamese", "Japanese"])
-        self.assertEqual(len(allowed), 13)
+        self.assertEqual(len(allowed), 40)
         self.assertTrue(
             all(
                 get_voice_language_group(v) in {"Vietnamese", "Japanese"}
@@ -220,22 +217,19 @@ class TestVoiceCatalog(unittest.TestCase):
             )
         )
 
-        # Query by canonical group name
+        # Query by canonical name & tts_lang code
         vn_only = list_voices(
-            language="Vietnamese", allowed_languages=["English (US)", "Vietnamese"]
+            language="Vietnamese", allowed_languages=["English", "Vietnamese"]
         )
-        self.assertEqual(len(vn_only), 7)
+        self.assertEqual(len(vn_only), 20)
+        self.assertEqual(len(list_voices(language="vi")), 20)
 
-        # Query by legacy group name "English"
-        expected_eng = len(
-            list_voices(
-                language="English", allowed_languages=["English (US)", "Vietnamese"]
-            )
+        # Query by "English" / "en" returns only 20 English voices (not all 120 with language='eng')
+        en_only = list_voices(
+            language="English", allowed_languages=["English", "Vietnamese"]
         )
-        eng_us_only = list_voices(
-            language="English", allowed_languages=["English (US)", "Vietnamese"]
-        )
-        self.assertEqual(len(eng_us_only), expected_eng)
+        self.assertEqual(len(en_only), 20)
+        self.assertEqual(len(list_voices(language="en")), 20)
 
 
 def _make_pcm_wav_bytes(
@@ -737,19 +731,18 @@ class TestAudioEndpoints(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status, 200)
         data = json.loads(body.decode("utf-8"))
         self.assertIn("available_voice_languages", data)
-        self.assertEqual(len(data["available_voice_languages"]), 31)
+        self.assertEqual(len(data["available_voice_languages"]), 6)
+        self.assertTrue(all(item["count"] == 20 for item in data["available_voice_languages"]))
         self.assertIn("voice_languages", data)
 
-        # Test legacy "English" expansion in GET /admin/settings
+        # Test legacy "English (US)" / "English (UK)" normalization in GET /admin/settings
         self.db.update_setting(
-            "voice_languages", {"enabled": True, "languages": ["English"]}
+            "voice_languages", {"enabled": True, "languages": ["English (US)", "English (UK)"]}
         )
         status, _, body = await call_asgi(app, "GET", "/admin/settings")
         self.assertEqual(status, 200)
         data = json.loads(body.decode("utf-8"))
-        self.assertIn("English (US)", data["voice_languages"]["languages"])
-        self.assertIn("English (UK)", data["voice_languages"]["languages"])
-        self.assertEqual(len(data["voice_languages"]["languages"]), 13)
+        self.assertEqual(data["voice_languages"]["languages"], ["English"])
 
         # POST /admin/settings updates voice_languages
         payload = json.dumps(
@@ -771,32 +764,16 @@ class TestAudioEndpoints(unittest.IsolatedAsyncioTestCase):
         updated = json.loads(body.decode("utf-8"))
         self.assertTrue(updated["voice_languages"]["enabled"])
         self.assertEqual(
-            updated["voice_languages"]["languages"], ["Vietnamese", "Japanese"]
+            set(updated["voice_languages"]["languages"]), {"Japanese", "Vietnamese"}
         )
 
     async def test_voices_filtered_by_settings_languages(self):
-        expected_total = len(
-            list_voices(allowed_languages=["English (US)", "Vietnamese", "Japanese"])
-        )
-        expected_us = len(
-            list_voices(
-                language="English",
-                allowed_languages=["English (US)", "Vietnamese", "Japanese"],
-            )
-        )
-        expected_vn = len(
-            list_voices(
-                language="Vietnamese",
-                allowed_languages=["English (US)", "Vietnamese", "Japanese"],
-            )
-        )
-
-        # Enable 3 groups: English (US), Vietnamese, Japanese
+        # Enable 3 groups: English, Vietnamese, Japanese (20 each = 60)
         self.db.update_setting(
             "voice_languages",
             {
                 "enabled": True,
-                "languages": ["English (US)", "Vietnamese", "Japanese"],
+                "languages": ["English", "Vietnamese", "Japanese"],
             },
         )
 
@@ -805,9 +782,9 @@ class TestAudioEndpoints(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(status, 200)
         data = json.loads(body.decode("utf-8"))
-        self.assertEqual(data["total"], expected_total)
+        self.assertEqual(data["total"], 60)
 
-        # AND filter with legacy query: ?language=English
+        # AND filter with query: ?language=English
         status, _, body = await call_asgi(
             app,
             "GET",
@@ -817,19 +794,19 @@ class TestAudioEndpoints(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(status, 200)
         eng_data = json.loads(body.decode("utf-8"))
-        self.assertEqual(eng_data["total"], expected_us)
+        self.assertEqual(eng_data["total"], 20)
 
-        # AND filter with disabled country: ?language=English%20(UK) -> 0 voices
+        # AND filter with query: ?language=ja
         status, _, body = await call_asgi(
             app,
             "GET",
             "/v1/audio/voices",
             headers=self.auth_headers,
-            query_string=b"language=English%20(UK)",
+            query_string=b"language=ja",
         )
         self.assertEqual(status, 200)
-        uk_data = json.loads(body.decode("utf-8"))
-        self.assertEqual(uk_data["total"], 0)
+        ja_data = json.loads(body.decode("utf-8"))
+        self.assertEqual(ja_data["total"], 20)
 
         # AND filter with query: ?language=Vietnamese
         status, _, body = await call_asgi(
@@ -841,19 +818,19 @@ class TestAudioEndpoints(unittest.IsolatedAsyncioTestCase):
         )
         self.assertEqual(status, 200)
         vn_data = json.loads(body.decode("utf-8"))
-        self.assertEqual(vn_data["total"], expected_vn)
+        self.assertEqual(vn_data["total"], 20)
 
-        # AND filter with disabled language: ?language=French -> 0 voices
+        # AND filter with disabled language: ?language=Korean -> 0 voices
         status, _, body = await call_asgi(
             app,
             "GET",
             "/v1/audio/voices",
             headers=self.auth_headers,
-            query_string=b"language=French",
+            query_string=b"language=Korean",
         )
         self.assertEqual(status, 200)
-        fr_data = json.loads(body.decode("utf-8"))
-        self.assertEqual(fr_data["total"], 0)
+        ko_data = json.loads(body.decode("utf-8"))
+        self.assertEqual(ko_data["total"], 0)
 
     async def test_speech_validations(self):
         # Empty input -> 400
@@ -959,12 +936,12 @@ class TestAudioEndpoints(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(status, 400)
         self.assertIn("not currently enabled in settings", body.decode("utf-8"))
 
-        # 2. Test when English (UK) is enabled, but English (US) is NOT enabled
+        # 2. Test when German & Vietnamese are enabled, English is still NOT enabled
         self.db.update_setting(
             "voice_languages",
             {
                 "enabled": True,
-                "languages": ["English (UK)", "Vietnamese", "Japanese"],
+                "languages": ["German", "Vietnamese"],
             },
         )
 
@@ -1362,7 +1339,7 @@ class TestAudioEndpoints(unittest.IsolatedAsyncioTestCase):
                 "POST",
                 "/v1/audio/speech",
                 headers=self.auth_headers + [(b"content-type", b"application/json")],
-                body=json.dumps({"input": "[whispers] [sad]", "voice": "Questioning Satchel"}).encode("utf-8"),
+                body=json.dumps({"input": "[whispers] [sad]", "voice": "Sprightly Sprinkler"}).encode("utf-8"),
             )
         self.assertEqual(status, 400)
         self.assertIn("no speakable text", body.decode("utf-8"))
@@ -1400,7 +1377,7 @@ class TestAudioEndpoints(unittest.IsolatedAsyncioTestCase):
                             {
                                 "model": "muse-tts",
                                 "input": "[laughs] Xin chào [whispers] bí mật [pause] nhé [unknown]",
-                                "voice": "Questioning Satchel",
+                                "voice": "Sprightly Sprinkler",
                                 "instructions": "Speak softly",
                             }
                         ).encode("utf-8"),

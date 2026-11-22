@@ -26,125 +26,33 @@ _PUBLIC_FIELDS = (
     "accent",
     "tone",
     "language",
+    "tts_lang",
     "description",
     "long_description",
 )
 
-_HIDDEN_VOICE_IDS = {"avocado_v2:p1a1_short"}
-
-# Static 31 canonical language groups mapped from 36 accents + French Canadian (fra)
-ACCENT_TO_LANGUAGE_GROUP: dict[str, str] = {
-    # English by Country (13 groups, 999 voices)
-    "american": "English (US)",
-    "southern american": "English (US)",
-    "new york": "English (US)",
-    "mid-atlantic": "English (US)",
-    "british": "English (UK)",
-    "scottish": "English (UK)",
-    "australian": "English (Australia)",
-    "irish": "English (Ireland)",
-    "south african": "English (South Africa)",
-    "kenyan": "English (Kenya)",
-    "nigerian": "English (Nigeria)",
-    "trinidadian": "English (Trinidad)",
-    "zimbabwean": "English (Zimbabwe)",
-    "new zealand": "English (New Zealand)",
-    "singaporean": "English (Singapore)",
-    "jamaican": "English (Jamaica)",
-    "canadian": "English (Canada)",
-    # Other distinct languages (17 groups, 218 voices)
-    "french": "French",
-    "french canadian": "French",
-    "indian": "Indian",
-    "finnish": "Finnish",
-    "indonesian": "Indonesian",
-    "spanish": "Spanish",
-    "german": "German",
-    "brazilian": "Portuguese",
-    "middle eastern": "Arabic",
-    "filipino": "Filipino",
-    "malaysian": "Malaysian",
-    "chinese": "Chinese",
-    "russian": "Russian",
-    "italian": "Italian",
-    "vietnamese": "Vietnamese",
-    "thai": "Thai",
-    "japanese": "Japanese",
-    "korean": "Korean",
-    # Other (1 voice)
-    "transylvanian": "Other",
+TTS_LANG_TO_NAME: dict[str, str] = {
+    "en": "English",
+    "vi": "Vietnamese",
+    "ja": "Japanese",
+    "ko": "Korean",
+    "zh": "Chinese",
+    "de": "German",
+    "fr": "French",
+    "es": "Spanish",
+    "it": "Italian",
+    "pt": "Portuguese",
+    "ru": "Russian",
+    "th": "Thai",
+    "id": "Indonesian",
+    "ar": "Arabic",
+    "fi": "Finnish",
+    "tl": "Filipino",
+    "ms": "Malaysian",
+    "hi": "Hindi",
 }
-
-ENGLISH_LANGUAGE_GROUPS: tuple[str, ...] = (
-    "English (US)",
-    "English (UK)",
-    "English (Australia)",
-    "English (Ireland)",
-    "English (South Africa)",
-    "English (Kenya)",
-    "English (Nigeria)",
-    "English (Trinidad)",
-    "English (Zimbabwe)",
-    "English (New Zealand)",
-    "English (Singapore)",
-    "English (Jamaica)",
-    "English (Canada)",
-)
-
-CANONICAL_LANGUAGE_GROUPS: tuple[str, ...] = (
-    "English (US)",
-    "English (UK)",
-    "English (Australia)",
-    "English (Ireland)",
-    "French",
-    "Indian",
-    "English (South Africa)",
-    "English (Kenya)",
-    "English (Nigeria)",
-    "English (Trinidad)",
-    "Finnish",
-    "English (Zimbabwe)",
-    "Indonesian",
-    "English (New Zealand)",
-    "Spanish",
-    "German",
-    "English (Singapore)",
-    "Arabic",
-    "English (Jamaica)",
-    "Portuguese",
-    "Filipino",
-    "Malaysian",
-    "Chinese",
-    "English (Canada)",
-    "Russian",
-    "Italian",
-    "Thai",
-    "Vietnamese",
-    "Japanese",
-    "Korean",
-    "Other",
-)
-
-_CANONICAL_LOWER_MAP: dict[str, str] = {g.lower(): g for g in CANONICAL_LANGUAGE_GROUPS}
-
-LANGUAGE_GROUP_TO_CODE: dict[str, str] = {
-    "Vietnamese": "vi",
-    "Japanese": "ja",
-    "Korean": "ko",
-    "Chinese": "zh",
-    "French": "fr",
-    "Spanish": "es",
-    "German": "de",
-    "Italian": "it",
-    "Portuguese": "pt",
-    "Russian": "ru",
-    "Thai": "th",
-    "Indonesian": "id",
-    "Arabic": "ar",
-    "Finnish": "fi",
-    "Filipino": "tl",
-    "Malaysian": "ms",
-}
+LANGUAGE_GROUP_TO_CODE: dict[str, str] = {name: code for code, name in TTS_LANG_TO_NAME.items()}
+_NAME_TO_CODE_LOWER: dict[str, str] = {name.lower(): code for code, name in TTS_LANG_TO_NAME.items()}
 
 _VOICES_CACHE: list[dict[str, str]] | None = None
 _BY_ID: dict[str, dict[str, str]] = {}
@@ -164,11 +72,16 @@ def _load_voices() -> list[dict[str, str]]:
     cleaned: list[dict[str, str]] = []
     for item in raw_list:
         vid = str(item.get("id") or "").strip()
-        if not vid or vid in _HIDDEN_VOICE_IDS:
+        if not vid:
             continue
         entry = {k: str(item.get(k) or "") for k in _PUBLIC_FIELDS}
+        tts_lang = str(item.get("tts_lang") or "").strip().lower()
+        entry["tts_lang"] = tts_lang
+        if tts_lang:
+            entry["language"] = tts_lang
         cleaned.append(entry)
-        _BY_ID[vid] = entry
+        if vid not in _BY_ID:
+            _BY_ID[vid] = entry
         _BY_ID_LIST.setdefault(vid, []).append(entry)
         name_l = entry["name"].strip().lower()
         if name_l:
@@ -180,65 +93,102 @@ def _load_voices() -> list[dict[str, str]]:
     return _VOICES_CACHE
 
 
-def get_voice_language_group(voice: dict[str, Any]) -> str:
-    """Determine the canonical language group of a voice."""
-    if str(voice.get("language") or "").strip().lower() == "fra":
-        return "French"
-    accent = str(voice.get("accent") or "").strip().lower()
-    return ACCENT_TO_LANGUAGE_GROUP.get(accent, "Other")
-
-
 def get_voice_language_code(voice: dict[str, Any] | None) -> str:
-    """Determine the short ISO language code (e.g. 'en', 'vi') for a voice."""
+    """Return the canonical ``tts_lang`` code (e.g. 'en', 'vi', 'ja') for a voice."""
     if not voice:
         return "en"
-    group = get_voice_language_group(voice)
-    return LANGUAGE_GROUP_TO_CODE.get(group, "en")
+    return str(voice.get("tts_lang") or "").strip().lower() or "en"
+
+
+def get_voice_language_group(voice: dict[str, Any]) -> str:
+    """Return the display language name derived from ``tts_lang``."""
+    code = str(voice.get("tts_lang") or "").strip().lower()
+    if not code:
+        return "Other"
+    return TTS_LANG_TO_NAME.get(code, code.upper())
+
+
+def _canonicalize_language_token(raw: str) -> str | None:
+    """Map a language code, display name, or legacy English(*) name to canonical display name."""
+    key = str(raw or "").strip().lower()
+    if not key:
+        return None
+    if key == "eng" or key.startswith("english ("):
+        return "English"
+    if key in TTS_LANG_TO_NAME:
+        return TTS_LANG_TO_NAME[key]
+    if key in _NAME_TO_CODE_LOWER:
+        return TTS_LANG_TO_NAME[_NAME_TO_CODE_LOWER[key]]
+
+    # Dynamic fallback for any tts_lang present in voices.json outside TTS_LANG_TO_NAME
+    for v in _load_voices():
+        code = get_voice_language_code(v)
+        group = get_voice_language_group(v)
+        if key == code or key == group.lower():
+            return group
+    return None
 
 
 def list_available_voice_languages() -> list[dict[str, Any]]:
-    """Return available language groups with counts sorted by count desc then name asc."""
+    """Return languages present in ``voices.json`` with counts sorted by count desc then name asc."""
     voices = _load_voices()
-    counts = Counter(get_voice_language_group(v) for v in voices)
-    items: list[dict[str, Any]] = []
-    for g in CANONICAL_LANGUAGE_GROUPS:
-        items.append({"name": g, "count": counts.get(g, 0)})
+    counts: Counter[tuple[str, str]] = Counter(
+        (get_voice_language_group(v), get_voice_language_code(v)) for v in voices
+    )
+    items = [
+        {"name": name, "code": code, "count": count}
+        for (name, code), count in counts.items()
+    ]
     items.sort(key=lambda x: (-x["count"], x["name"]))
     return items
 
 
 def normalize_voice_languages(languages: list[str] | set[str] | None) -> list[str]:
-    """Validate and normalize user-provided language names to canonical unique list.
-    Automatically expands legacy 'English' to all 13 English (*) country groups.
-    """
+    """Validate and normalize user-provided language names/codes to canonical unique display names."""
     if not languages:
         return []
     seen: set[str] = set()
-    result: list[str] = []
     for raw in languages:
-        key = str(raw or "").strip().lower()
-        if key == "english":
-            for eng_group in ENGLISH_LANGUAGE_GROUPS:
-                if eng_group not in seen:
-                    seen.add(eng_group)
-                    result.append(eng_group)
-            continue
-        canonical = _CANONICAL_LOWER_MAP.get(key)
-        if canonical and canonical not in seen:
+        canonical = _canonicalize_language_token(raw)
+        if canonical:
             seen.add(canonical)
-            result.append(canonical)
-    # Maintain canonical sort order
-    return [g for g in CANONICAL_LANGUAGE_GROUPS if g in seen]
+    ordered = [item["name"] for item in list_available_voice_languages() if item["name"] in seen]
+    extra = sorted(name for name in seen if name not in ordered)
+    return ordered + extra
 
 
 def is_voice_allowed(voice: dict[str, Any], allowed_languages: list[str] | set[str] | None) -> bool:
-    """Check if a voice matches the allowed language groups."""
+    """Check if a voice's ``tts_lang`` / language group is in ``allowed_languages``."""
     if not allowed_languages:
         return True
-    allowed_set = {str(l).strip().lower() for l in allowed_languages if str(l).strip()}
+    allowed_set: set[str] = set()
+    for raw in allowed_languages:
+        s = str(raw or "").strip()
+        if not s:
+            continue
+        canonical = _canonicalize_language_token(s)
+        allowed_set.add((canonical or s).lower())
     if not allowed_set:
         return True
-    return get_voice_language_group(voice).lower() in allowed_set
+    return (
+        get_voice_language_group(voice).lower() in allowed_set
+        or get_voice_language_code(voice).lower() in allowed_set
+    )
+
+
+def _match_voice_language(voice: dict[str, Any], language: str) -> bool:
+    """Return True if a voice entry matches a requested ``tts_lang`` code or language name."""
+    lang_l = str(language or "").strip().lower()
+    if not lang_l:
+        return True
+    code = get_voice_language_code(voice).lower()
+    group = get_voice_language_group(voice)
+    if lang_l == code or lang_l == group.lower():
+        return True
+    canonical = _canonicalize_language_token(lang_l)
+    if canonical and canonical.lower() == group.lower():
+        return True
+    return False
 
 
 def list_voices(
@@ -257,36 +207,30 @@ def list_voices(
     t_f = tone.strip().lower()
     q_f = q.strip().lower()
 
-    allowed_set = {str(l).strip().lower() for l in allowed_languages or [] if str(l).strip()}
-
     out: list[dict[str, str]] = []
     for v in voices:
-        # Enforce settings voice_languages filter when provided
-        if allowed_set and get_voice_language_group(v).lower() not in allowed_set:
+        if allowed_languages and not is_voice_allowed(v, allowed_languages):
             continue
-
         if g_f and v["gender"].lower() != g_f:
             continue
         if a_f and v["accent"].lower() != a_f:
             continue
-
-        # Match query param language against raw code ('fra'), canonical group ('English (US)', 'French'...),
-        # or legacy "English" / "eng" which matches any group in ENGLISH_LANGUAGE_GROUPS
-        if l_f:
-            raw_lang = v["language"].lower()
-            lang_group = get_voice_language_group(v)
-            lang_group_l = lang_group.lower()
-            if l_f in ("english", "eng"):
-                if lang_group not in ENGLISH_LANGUAGE_GROUPS:
-                    continue
-            elif l_f != raw_lang and l_f != lang_group_l:
-                continue
-
+        if l_f and not _match_voice_language(v, l_f):
+            continue
         if t_f and v["tone"].lower() != t_f:
             continue
         if q_f:
             haystack = " ".join(
-                (v["id"], v["name"], v["accent"], v["tone"], v["description"], v["long_description"])
+                (
+                    v["id"],
+                    v["name"],
+                    v["tts_lang"],
+                    get_voice_language_group(v),
+                    v["accent"],
+                    v["tone"],
+                    v["description"],
+                    v["long_description"],
+                )
             ).lower()
             if q_f not in haystack:
                 continue
@@ -304,58 +248,47 @@ def has_multiple_language_groups(voice_id: str) -> bool:
     return len(groups) > 1
 
 
-def _match_voice_language(voice: dict[str, Any], language: str) -> bool:
-    """Return True if a voice entry matches a requested language group, code, or accent."""
-    lang_l = language.strip().lower()
-    if not lang_l:
-        return True
-    group = get_voice_language_group(voice)
-    if group.lower() == lang_l:
-        return True
-    code = LANGUAGE_GROUP_TO_CODE.get(group, "").lower()
-    if code and code == lang_l:
-        return True
-    if lang_l in ("english", "eng") and group in ENGLISH_LANGUAGE_GROUPS:
-        return True
-    if str(voice.get("accent") or "").strip().lower() == lang_l:
-        return True
-    if str(voice.get("language") or "").strip().lower() == lang_l:
-        return True
-    return False
-
-
-def resolve_voice(voice_input: str | None, language: str | None = None) -> dict[str, str] | None:
+def resolve_voice(
+    voice_input: str | None,
+    language: str | None = None,
+    allowed_languages: list[str] | set[str] | None = None,
+) -> dict[str, str] | None:
     """Resolve voice by exact id, case-insensitive name, or OpenAI preset alias.
 
     When ``language`` is provided and multiple catalog entries share the same ID or name,
-    prefer the entry whose language group, ISO code, or accent matches ``language``.
+    prefer the entry matching ``language``. Otherwise, if ``allowed_languages`` is provided,
+    prefer the first entry allowed by settings.
     """
     _load_voices()
     raw = (voice_input or "").strip()
     if not raw:
         if DEFAULT_VOICE_ID in _BY_ID:
-            return _BY_ID[DEFAULT_VOICE_ID]
-        return _VOICES_CACHE[0] if _VOICES_CACHE else None
-
-    candidates: list[dict[str, str]] | None = None
-    default_entry: dict[str, str] | None = None
-
-    if raw in _BY_ID_LIST:
-        candidates = _BY_ID_LIST[raw]
-        default_entry = _BY_ID[raw]
-    else:
-        lowered = raw.lower()
-        if lowered in _BY_NAME_LOWER_LIST:
-            candidates = _BY_NAME_LOWER_LIST[lowered]
-            default_entry = _BY_NAME_LOWER[lowered]
+            candidates = _BY_ID_LIST[DEFAULT_VOICE_ID]
+            default_entry = _BY_ID[DEFAULT_VOICE_ID]
+        elif _VOICES_CACHE:
+            candidates = [_VOICES_CACHE[0]]
+            default_entry = _VOICES_CACHE[0]
         else:
-            alias_target = OPENAI_VOICE_ALIASES.get(lowered)
-            if alias_target and alias_target in _BY_ID_LIST:
-                candidates = _BY_ID_LIST[alias_target]
-                default_entry = _BY_ID[alias_target]
-            elif alias_target and _VOICES_CACHE:
-                # Fallback to the first available voice if preset alias target is not in catalog
-                return _VOICES_CACHE[0]
+            return None
+    else:
+        candidates = None
+        default_entry = None
+        if raw in _BY_ID_LIST:
+            candidates = _BY_ID_LIST[raw]
+            default_entry = _BY_ID[raw]
+        else:
+            lowered = raw.lower()
+            if lowered in _BY_NAME_LOWER_LIST:
+                candidates = _BY_NAME_LOWER_LIST[lowered]
+                default_entry = _BY_NAME_LOWER[lowered]
+            else:
+                alias_target = OPENAI_VOICE_ALIASES.get(lowered)
+                if alias_target and alias_target in _BY_ID_LIST:
+                    candidates = _BY_ID_LIST[alias_target]
+                    default_entry = _BY_ID[alias_target]
+                elif alias_target and _VOICES_CACHE:
+                    candidates = [_VOICES_CACHE[0]]
+                    default_entry = _VOICES_CACHE[0]
 
     if not candidates:
         return None
@@ -364,6 +297,10 @@ def resolve_voice(voice_input: str | None, language: str | None = None) -> dict[
     if lang_filter:
         for entry in candidates:
             if _match_voice_language(entry, lang_filter):
+                return entry
+    elif allowed_languages:
+        for entry in candidates:
+            if is_voice_allowed(entry, allowed_languages):
                 return entry
 
     return default_entry

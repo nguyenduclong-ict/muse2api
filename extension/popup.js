@@ -29,7 +29,21 @@ async function clearMuseCookies() {
   return { total: existing.length, removed };
 }
 
-async function clearMuseSiteData() {
+async function reloadMuseTabs(tabs) {
+  let reloadedTabs = 0;
+  for (const tab of tabs) {
+    if (tab.id == null) continue;
+    try {
+      await chrome.tabs.reload(tab.id, { bypassCache: true });
+      reloadedTabs += 1;
+    } catch (_) {
+      // Ignore tabs that were closed or cannot be reloaded
+    }
+  }
+  return reloadedTabs;
+}
+
+async function clearMuseSiteData({ reload = true } = {}) {
   let tabs = [];
   try {
     tabs = await chrome.tabs.query({
@@ -89,17 +103,8 @@ async function clearMuseSiteData() {
 
   await clearMuseCookies();
 
-  let reloadedTabs = 0;
-  for (const tab of tabs) {
-    if (tab.id == null) continue;
-    try {
-      await chrome.tabs.reload(tab.id, { bypassCache: true });
-      reloadedTabs += 1;
-    } catch (_) {
-      // Ignore tabs that were closed or cannot be reloaded
-    }
-  }
-  return { reloadedTabs };
+  const reloadedTabs = reload ? await reloadMuseTabs(tabs) : 0;
+  return { tabs, reloadedTabs };
 }
 
 function parseCookiesInput(raw) {
@@ -165,6 +170,7 @@ document.getElementById("copyBtn").addEventListener("click", async () => {
 
 document.getElementById("importBtn").addEventListener("click", async () => {
   hideClearConfirm();
+  const importBtn = document.getElementById("importBtn");
   const raw = document.getElementById("importInput").value;
   const parsed = parseCookiesInput(raw);
   if (parsed.length === 0) {
@@ -172,9 +178,10 @@ document.getElementById("importBtn").addEventListener("click", async () => {
     return;
   }
 
-  setStatus("Importing cookies...");
+  importBtn.disabled = true;
+  setStatus("Clearing site data & importing cookies...");
   try {
-    await clearMuseCookies();
+    const { tabs } = await clearMuseSiteData({ reload: false });
 
     const expirationDate = Math.floor(Date.now() / 1000) + 60 * 60 * 24 * 365;
     let count = 0;
@@ -196,9 +203,19 @@ document.getElementById("importBtn").addEventListener("click", async () => {
       count += 1;
     }
 
-    setStatus(`Imported ${count} cookies for muse.ai! Refresh muse.ai tab to apply.`, "ok");
+    const reloadedTabs = await reloadMuseTabs(tabs);
+    if (reloadedTabs > 0) {
+      setStatus(
+        `Imported ${count} cookies & reloaded ${reloadedTabs} muse.ai ${reloadedTabs === 1 ? "tab" : "tabs"}.`,
+        "ok",
+      );
+    } else {
+      setStatus(`Imported ${count} cookies for muse.ai!`, "ok");
+    }
   } catch (err) {
     setStatus("Import failed: " + (err?.message || String(err)), "err");
+  } finally {
+    importBtn.disabled = false;
   }
 });
 

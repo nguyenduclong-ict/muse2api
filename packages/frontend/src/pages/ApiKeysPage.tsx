@@ -118,15 +118,16 @@ Query params (optional):
 - q: search keyword (matches id, name, tags)`,
     outputDoc: `{
   "object": "list",
-  "total": 280,
+  "total": 120,
   "data": [
     {
       "id": "avocado_v2:vdc_NOID25",
       "name": "Timid Marshmallow",
       "gender": "F",
       "accent": "American",
-      "language": "eng",
-      "language_group": "English (US)",
+      "language": "en",
+      "tts_lang": "en",
+      "language_group": "English",
       "tone": "Innocent",
       "description": "Feminine, American, Mid-range, Innocent",
       "long_description": "medium-pitched, innocent, cautious, helpful, throaty, bright, flinty. (F, Middle-aged)",
@@ -151,7 +152,7 @@ Binary audio/mpeg (.mp3 stream with headers X-Voice-Preview-Cache: HIT|MISS)
 {
   "voice_id": "avocado_v2:MAI_01",
   "voice_name": "Aria",
-  "language_group": "English (US)",
+  "language_group": "English",
   "sample_text": "Hello! This is a quick voice preview so you can hear how I sound.",
   "cached": true,
   "url": "http://.../v1/voice-previews/avocado_v2__MAI_01.mp3",

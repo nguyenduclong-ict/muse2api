@@ -46,6 +46,7 @@ interface VoiceItem {
   gender: string;
   accent: string;
   language: string;
+  tts_lang?: string;
   language_group: string;
   tone: string;
   description: string;
@@ -630,6 +631,7 @@ export function PlaygroundPage() {
 
   // Selected voice for Speech Tester
   const [selectedVoiceId, setSelectedVoiceId] = useState("avocado_v2:MAI_01");
+  const [selectedVoiceLang, setSelectedVoiceLang] = useState("");
   const [speechModel, setSpeechModel] = useState("muse-tts");
   const [speechSpeed, setSpeechSpeed] = useState("1.0");
   const [speechFormat, setSpeechFormat] = useState<"mp3" | "wav" | "url">("mp3");
@@ -664,23 +666,36 @@ export function PlaygroundPage() {
       );
       if (!exists) {
         setSelectedVoiceId(allVoices[0].id);
+        setSelectedVoiceLang(allVoices[0].tts_lang || allVoices[0].language_group || "");
       }
     }
   }, [allVoices, selectedVoiceId]);
 
   const selectedVoiceObj = useMemo(() => {
+    if (selectedVoiceLang) {
+      const exact = allVoices.find(
+        (v) =>
+          (v.id === selectedVoiceId || v.name.toLowerCase() === selectedVoiceId.toLowerCase()) &&
+          (v.tts_lang === selectedVoiceLang || v.language_group === selectedVoiceLang),
+      );
+      if (exact) return exact;
+    }
     return allVoices.find(
       (v) => v.id === selectedVoiceId || v.name.toLowerCase() === selectedVoiceId.toLowerCase(),
     );
-  }, [allVoices, selectedVoiceId]);
+  }, [allVoices, selectedVoiceId, selectedVoiceLang]);
 
-  // Extract unique language groups
+  // Extract unique language groups with counts
   const availableLangGroups = useMemo(() => {
-    const s = new Set<string>();
+    const counts = new Map<string, number>();
     for (const v of allVoices) {
-      if (v.language_group) s.add(v.language_group);
+      if (v.language_group) {
+        counts.set(v.language_group, (counts.get(v.language_group) || 0) + 1);
+      }
     }
-    return Array.from(s).sort();
+    return Array.from(counts.entries())
+      .map(([name, count]) => ({ name, count }))
+      .sort((a, b) => b.count - a.count || a.name.localeCompare(b.name));
   }, [allVoices]);
 
   // Filter voices
@@ -691,7 +706,7 @@ export function PlaygroundPage() {
       if (voiceSearch.trim()) {
         const q = voiceSearch.toLowerCase();
         const haystack =
-          `${v.name} ${v.id} ${v.language_group} ${v.accent} ${v.tone} ${v.description} ${v.long_description || ""}`.toLowerCase();
+          `${v.name} ${v.id} ${v.tts_lang || ""} ${v.language_group} ${v.accent} ${v.tone} ${v.description} ${v.long_description || ""}`.toLowerCase();
         if (!haystack.includes(q)) return false;
       }
       return true;
@@ -755,6 +770,7 @@ export function PlaygroundPage() {
       model: speechModel,
       input: speechInput,
       voice: selectedVoiceId,
+      language: selectedVoiceObj?.tts_lang || undefined,
       instructions: speechInstructions || undefined,
       speed: parseFloat(speechSpeed) || 1.0,
       response_format: speechFormat,
@@ -765,6 +781,7 @@ export function PlaygroundPage() {
     speechModel,
     speechInput,
     selectedVoiceId,
+    selectedVoiceObj,
     speechInstructions,
     speechSpeed,
     speechFormat,
@@ -782,6 +799,7 @@ export function PlaygroundPage() {
         model: speechModel,
         input: speechInput.trim(),
         voice: selectedVoiceId,
+        language: selectedVoiceObj?.tts_lang || undefined,
         instructions: speechInstructions.trim() || undefined,
         speed: parseFloat(speechSpeed) || 1.0,
         response_format: speechFormat,
@@ -1441,8 +1459,8 @@ export function PlaygroundPage() {
                   >
                     <option value="">All Languages ({availableLangGroups.length})</option>
                     {availableLangGroups.map((g) => (
-                      <option key={g} value={g}>
-                        {g}
+                      <option key={g.name} value={g.name}>
+                        {g.name} ({g.count})
                       </option>
                     ))}
                   </select>
@@ -1530,7 +1548,8 @@ export function PlaygroundPage() {
                                   size="sm"
                                   onClick={() => {
                                     setSelectedVoiceId(v.id);
-                                    toast.info(`Selected voice: ${v.name}`);
+                                    setSelectedVoiceLang(v.tts_lang || v.language_group || "");
+                                    toast.info(`Selected voice: ${v.name} (${v.language_group})`);
                                   }}
                                   className="h-7 px-2 text-xs text-blue-400 hover:text-blue-300"
                                 >

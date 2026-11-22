@@ -90,7 +90,7 @@ class TestVoicePreviewServiceUnit(unittest.TestCase):
         self.assertIn("Xin chào", get_sample_text_for_group("Vietnamese"))
         self.assertIn("こんにちは", get_sample_text_for_group("Japanese"))
         self.assertIn("Bonjour", get_sample_text_for_group("French"))
-        self.assertEqual(get_sample_text_for_group("English (US)"), DEFAULT_SAMPLE_TEXT)
+        self.assertEqual(get_sample_text_for_group("English"), DEFAULT_SAMPLE_TEXT)
         self.assertEqual(get_sample_text_for_group("Other"), DEFAULT_SAMPLE_TEXT)
 
     def test_cache_hit_and_miss(self):
@@ -196,7 +196,8 @@ class TestVoicePreviewEndpoints(unittest.IsolatedAsyncioTestCase):
         data = json.loads(body.decode("utf-8"))
         self.assertGreater(data["total"], 0)
         target = next(v for v in data["data"] if v["id"] == "avocado_v2:vdc_NOID25")
-        self.assertEqual(target["language_group"], "English (US)")
+        self.assertEqual(target["language_group"], "English")
+        self.assertEqual(target["tts_lang"], "en")
         self.assertTrue(target["cached"])
         self.assertIn("long_description", target)
         self.assertIn("/v1/audio/voices/avocado_v2:vdc_NOID25/preview", target["preview_url"])
@@ -302,13 +303,13 @@ class TestVoicePreviewEndpoints(unittest.IsolatedAsyncioTestCase):
 
     async def test_duplicate_voice_id_preview_by_language(self):
         """Duplicate voice IDs across languages must resolve & cache independently per language."""
-        dup_id = "avocado_v2:vd3_qvd_00052"
+        dup_id = "avocado_v2:Twenty"
         v_ja = resolve_voice(dup_id, language="Japanese")
         v_vi = resolve_voice(dup_id, language="Vietnamese")
         self.assertIsNotNone(v_ja)
         self.assertIsNotNone(v_vi)
-        self.assertEqual(v_ja["accent"], "Japanese")
-        self.assertEqual(v_vi["accent"], "Vietnamese")
+        self.assertEqual(v_ja["tts_lang"], "ja")
+        self.assertEqual(v_vi["tts_lang"], "vi")
 
         os.makedirs(self.cfg.media_dir, exist_ok=True)
         dummy_mp3 = os.path.join(self.cfg.media_dir, "dup_preview.mp3")
@@ -340,7 +341,7 @@ class TestVoicePreviewEndpoints(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data_ja["language_group"], "Japanese")
         self.assertEqual(data_ja["sample_text"], SAMPLE_TEXTS["Japanese"])
         self.assertFalse(data_ja["cached"])
-        self.assertIn("avocado_v2__vd3_qvd_00052__Japanese.mp3", data_ja["url"])
+        self.assertIn("avocado_v2__Twenty__Japanese.mp3", data_ja["url"])
 
         # Request Vietnamese preview for the same ID: must NOT hit Japanese cache
         with patch("services.audio_format.find_ffmpeg", return_value=None):
@@ -356,7 +357,7 @@ class TestVoicePreviewEndpoints(unittest.IsolatedAsyncioTestCase):
         self.assertEqual(data_vi["language_group"], "Vietnamese")
         self.assertEqual(data_vi["sample_text"], SAMPLE_TEXTS["Vietnamese"])
         self.assertFalse(data_vi["cached"])
-        self.assertIn("avocado_v2__vd3_qvd_00052__Vietnamese.mp3", data_vi["url"])
+        self.assertIn("avocado_v2__Twenty__Vietnamese.mp3", data_vi["url"])
 
         # Verify audio bytes are isolated per language
         status, _, ja_bytes = await call_asgi(
