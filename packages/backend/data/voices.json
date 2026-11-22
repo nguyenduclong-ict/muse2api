@@ -3159,18 +3159,6 @@
     "language": "eng"
   },
   {
-    "id": "avocado_v2:vd2_smoky_teacup",
-    "name": "Questioning Satchel",
-    "gender": "M",
-    "accent": "Vietnamese",
-    "tone": "Curious",
-    "description": "Masculine, Vietnamese, Mid-range, Curious",
-    "long_description": "Mid-pitched Vietnamese voice with moderate pacing and a curious delivery. Clear, crisp, head timbre (M, Young)",
-    "aesthetics_mean": 1.6667,
-    "adherence_mean": 2,
-    "language": "eng"
-  },
-  {
     "id": "avocado_v2:vd2_r8_rep5k_3497_v068_28k_g5k",
     "name": "Tenacious Mooring",
     "gender": "M",

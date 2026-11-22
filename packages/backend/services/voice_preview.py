@@ -24,6 +24,31 @@ logger = logging.getLogger(__name__)
 
 _TAG_RE = re.compile(r"\[([^\[\]]*)\]")
 
+_JA_LANGS = {"ja", "jp", "jpn", "japanese"}
+
+_FULLWIDTH_ALNUM_TRANS = str.maketrans(
+    {
+        **{chr(0xFF10 + i): chr(0x30 + i) for i in range(10)},
+        **{chr(0xFF21 + i): chr(0x41 + i) for i in range(26)},
+        **{chr(0xFF41 + i): chr(0x61 + i) for i in range(26)},
+    }
+)
+
+_CJK_SPACE_OR_DECOR_RE = re.compile(r"[\u3000\u30FB\uFF65※★☆♪♫→←⇒■●◆▼／]+")
+_CJK_QUOTE_RE = re.compile(r"[「」『』＂＇]+")
+_CJK_LEADING_OPEN_BRACKET_RE = re.compile(r"^\s*[（【［｛〈《〔≪]+\s*")
+_CJK_TRAILING_CLOSE_BRACKET_RE = re.compile(r"\s*[）】］｝〉》〕≫]+\s*$")
+_CJK_OPEN_BRACKET_RE = re.compile(r"[（【［｛〈《〔≪]+")
+_CJK_CLOSE_BRACKET_RE = re.compile(r"[）】］｝〉》〕≫]+")
+_CJK_WAVE_RANGE_RE = re.compile(r"(?<=[\d時分秒日月年円人個回])\s*[〜～]+\s*(?=\d)")
+_CJK_WAVE_KANA_RE = re.compile(r"(?<=[\u3040-\u309F\u30A0-\u30FF])[〜～]+")
+_CJK_WAVE_REST_RE = re.compile(r"[〜～]+")
+_CJK_ELLIPSIS_END_RE = re.compile(r"[…⋯︙‥]+\s*$")
+_CJK_ELLIPSIS_RE = re.compile(r"[…⋯︙‥]+")
+_CJK_DASH_START_RE = re.compile(r"^\s*[―—─–－]+\s*")
+_CJK_DASH_END_RE = re.compile(r"\s*[―—─–－]+\s*$")
+_CJK_DASH_RE = re.compile(r"[―—─–－]+")
+
 _COMMON_TAG_MAP: dict[str, str] = {
     "sighs": "Haiz...",
     "gasps": "Huh!",
@@ -86,8 +111,44 @@ def get_sample_text_for_group(group: str) -> str:
     return SAMPLE_TEXTS.get(group, DEFAULT_SAMPLE_TEXT)
 
 
+def _normalize_cjk_line(line: str, lang: str) -> str:
+    """Normalize Japanese/CJK fullwidth punctuation and symbols into TTS-safe forms."""
+    line = line.translate(_FULLWIDTH_ALNUM_TRANS)
+    line = _CJK_SPACE_OR_DECOR_RE.sub(" ", line)
+
+    range_rep = "から" if lang in _JA_LANGS else "-"
+    line = _CJK_WAVE_RANGE_RE.sub(range_rep, line)
+    line = _CJK_WAVE_KANA_RE.sub("ー", line)
+    line = _CJK_WAVE_REST_RE.sub(" ", line)
+
+    line = re.sub(r"(?<=\d)．(?=\d)", ".", line)
+    line = re.sub(r"(?<=\d)：(?=\d)", ":", line)
+    line = re.sub(r"[：；]+", ", ", line)
+
+    line = _CJK_QUOTE_RE.sub(" ", line)
+    line = _CJK_LEADING_OPEN_BRACKET_RE.sub("", line)
+    line = _CJK_TRAILING_CLOSE_BRACKET_RE.sub("", line)
+    line = _CJK_OPEN_BRACKET_RE.sub(", ", line)
+    line = _CJK_CLOSE_BRACKET_RE.sub(", ", line)
+
+    line = re.sub(r"(?:！？|⁉|‼)+", "! ", line)
+    line = re.sub(r"(?:？！|[⁈⁇])+", "? ", line)
+    line = re.sub(r"[。｡．]+", ". ", line)
+    line = re.sub(r"！+", "! ", line)
+    line = re.sub(r"？+", "? ", line)
+    line = re.sub(r"[、､，]+", ", ", line)
+
+    line = _CJK_ELLIPSIS_END_RE.sub(".", line)
+    line = _CJK_ELLIPSIS_RE.sub(", ", line)
+
+    line = _CJK_DASH_START_RE.sub("", line)
+    line = _CJK_DASH_END_RE.sub(".", line)
+    line = _CJK_DASH_RE.sub(", ", line)
+    return line
+
+
 def preprocess_speech_text(text: str, language: str | None = None) -> str:
-    """Convert supported bracket emotion tags locally and strip unsupported ones."""
+    """Convert supported bracket emotion tags locally and normalize CJK punctuation."""
     lang = (language or "en").strip().lower()
     tag_map = _VI_TAG_MAP if lang == "vi" else _DEFAULT_TAG_MAP
 
@@ -101,11 +162,15 @@ def preprocess_speech_text(text: str, language: str | None = None) -> str:
         line = raw_line
         while _TAG_RE.search(line):
             line = _TAG_RE.sub(_replace_tag, line)
+        line = _normalize_cjk_line(line, lang)
         line = re.sub(r"[ \t]+", " ", line).strip()
         line = re.sub(r"\s+([,;!?])", r"\1", line)
+        line = re.sub(r"(?<!\.)\s+\.(?!\.)", ".", line)
         line = re.sub(r"\s+(\.{3})", r"\1", line)
         line = re.sub(r",\s*,+", ",", line)
+        line = re.sub(r",\s*([.!?])", r"\1", line)
         line = re.sub(r"([.!?]),+", r"\1", line)
+        line = re.sub(r"([!?])\.+", r"\1", line)
         line = re.sub(r",([^\s,.;!?])", r", \1", line)
         line = re.sub(r"[ \t]+", " ", line).strip()
         cleaned_lines.append(line)

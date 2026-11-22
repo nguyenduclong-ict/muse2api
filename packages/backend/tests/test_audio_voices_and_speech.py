@@ -369,6 +369,77 @@ class TestSpeechPromptBuilder(unittest.TestCase):
             "Line 1\n\nLine 2, hơ hơ, ok",
         )
 
+    def test_preprocess_japanese_cjk_punctuation(self):
+        # User's exact Japanese sample: fullwidth '。' and '、', plus Katakana 'ー' preserved
+        sample = "コピー機から遅れて一枚出てきた。その足元には証明書の紙くず。試し刷りは、印刷方向だけ正常。"
+        self.assertEqual(
+            preprocess_speech_text(sample, "ja"),
+            "コピー機から遅れて一枚出てきた. その足元には証明書の紙くず. 試し刷りは, 印刷方向だけ正常.",
+        )
+
+        # Preserve 'ー' (prolonged sound mark) and '々' (iteration mark)
+        self.assertEqual(
+            preprocess_speech_text("人々・コーヒー　タイム※★♪→", "ja"),
+            "人々 コーヒー タイム",
+        )
+
+        # Fullwidth exclamation/question & compound marks
+        self.assertEqual(
+            preprocess_speech_text("本当！？すごい‼まじ？！本当⁉", "ja"),
+            "本当! すごい! まじ? 本当!",
+        )
+
+        # Fullwidth colon/semicolon & numeric decimals/time preservation
+        self.assertEqual(
+            preprocess_speech_text("時間：１２：３０；円周率：３．１４。", "ja"),
+            "時間, 12:30, 円周率, 3.14.",
+        )
+
+        # CJK ellipsis & dashes vs preserved [pause] ASCII '...'
+        self.assertEqual(
+            preprocess_speech_text("待って……えっ――本当に…", "ja"),
+            "待って, えっ, 本当に.",
+        )
+        self.assertEqual(
+            preprocess_speech_text("あの[pause]えっと――そう。", "ja"),
+            "あの... えっと, そう.",
+        )
+
+        # Dialogue quotes & fullwidth brackets (［...］ must NOT be stripped as emotion tag)
+        self.assertEqual(
+            preprocess_speech_text("「こんにちは。」『元気？』", "ja"),
+            "こんにちは. 元気?",
+        )
+        self.assertEqual(
+            preprocess_speech_text("【重要】お知らせ（注釈）［確認］", "ja"),
+            "重要, お知らせ, 注釈, 確認",
+        )
+
+        # Wave dash / fullwidth tilde
+        self.assertEqual(
+            preprocess_speech_text("５〜１０分、１０時〜１２時、え〜すごい！", "ja"),
+            "5から10分, 10時から12時, えーすごい!",
+        )
+        self.assertEqual(
+            preprocess_speech_text("5〜10 items", "en"),
+            "5-10 items",
+        )
+
+        # End-to-end inside _build_speech_prompt
+        prompt = _build_speech_prompt(
+            sample,
+            "avocado_v2:vdc_NOID25",
+            "JP Voice",
+            language="ja",
+            output_filename="tts-ja.mp3",
+        )
+        self.assertNotIn("。", prompt)
+        self.assertNotIn("、", prompt)
+        self.assertIn(
+            "コピー機から遅れて一枚出てきた. その足元には証明書の紙くず. 試し刷りは, 印刷方向だけ正常.",
+            prompt,
+        )
+
     def test_sanitize_output_filename(self):
         self.assertEqual(
             sanitize_output_filename("../../etc/tts-abc.mp3", "wav"),
