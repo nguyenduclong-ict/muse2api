@@ -2,17 +2,20 @@
 
 ::: columns-2
 ::: column Sidebar {span-1}
+
 - Overview
 - Accounts
 - API & Keys
 - Tasks & Media
 - **Settings**
-:::
+  :::
 
 ::: column Main Content {span-4}
+
 # Settings
 
 ::: card Global System Prompt
+
 - [ ] Enable Global System Prompt (prepend `<system>...</system>` to all `/v1/*` requests)
 
 [System Prompt Content___]{rows:5 placeholder:"Enter global system prompt..."}
@@ -22,10 +25,12 @@
 :::
 
 ::: card Voice Languages
+
 - [x] Filter `/v1/audio/voices` and `/v1/audio/speech` by selected languages (leave off or empty to allow all voices)
 
 ::: columns-3
 ::: column Group 1
+
 - [x] English (US) (541)
 - [ ] English (UK) (200)
 - [ ] English (Australia) (73)
@@ -37,8 +42,8 @@
 - [ ] English (Nigeria) (20)
 - [ ] English (Trinidad) (20)
 - [ ] Finnish (20)
-:::
-::: column Group 2
+      :::
+      ::: column Group 2
 - [ ] English (Zimbabwe) (19)
 - [ ] Indonesian (18)
 - [ ] English (New Zealand) (15)
@@ -50,8 +55,8 @@
 - [ ] Portuguese (11)
 - [ ] Filipino (10)
 - [ ] Malaysian (10)
-:::
-::: column Group 3
+      :::
+      ::: column Group 3
 - [ ] Chinese (9)
 - [ ] English (Canada) (9)
 - [ ] Russian (9)
@@ -61,8 +66,8 @@
 - [x] Japanese (6)
 - [ ] Korean (4)
 - [ ] Other (1)
-:::
-:::
+      :::
+      :::
 
 ::: row {between}
 **Selected:** 3 languages (554 voices allowed)
@@ -73,14 +78,15 @@
 :::
 
 ::: card Media Cleanup Policy
+
 - [x] Enable Scheduled Media Cleanup
 
 ::: columns-3
 ::: column Retention
-[Retention (Days)___]{value:"1"}
+[Retention (Days)_**]{value:"1"}
 :::
 ::: column Capacity Cap
-[Max Storage (GB)___]{value:"1"}
+[Max Storage (GB)**_]{value:"1"}
 :::
 ::: column Schedule
 [Interval (Minutes, min 5)___]{value:"60"}
@@ -92,6 +98,17 @@
 ::: row {right}
 [Run Cleanup Now]{outline} [Save Cleanup Policy]{primary}
 :::
+:::
+:::
+
+::: card Auto Reset Muse
+
+- [ ] Enable Scheduled Auto Reset (reset eligible accounts with `auto_reset` enabled and `requests_since_reset > 0`)
+
+[Interval (Minutes, min 60)___]{value:"1440"}
+
+::: row {right}
+[Run Due Resets Now]{outline} [Save Auto Reset]{primary}
 :::
 :::
 :::

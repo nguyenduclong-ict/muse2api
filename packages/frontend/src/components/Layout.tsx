@@ -1,9 +1,24 @@
 import React from "react";
 import { NavLink } from "react-router-dom";
-import { Activity, Globe, KeyRound, LayoutDashboard, ListTodo, PlayCircle, Settings, Users, Radio } from "lucide-react";
+import {
+  Activity,
+  Globe,
+  KeyRound,
+  LayoutDashboard,
+  ListTodo,
+  PlayCircle,
+  Settings,
+  Users,
+  Radio,
+} from "lucide-react";
 import { cn } from "./ui";
 
-const NAV_ITEMS: { to: string; label: string; icon: React.ComponentType<{ className?: string }>; end?: boolean }[] = [
+const NAV_ITEMS: {
+  to: string;
+  label: string;
+  icon: React.ComponentType<{ className?: string }>;
+  end?: boolean;
+}[] = [
   { to: "/", label: "Overview", icon: LayoutDashboard, end: true },
   { to: "/accounts", label: "Accounts", icon: Users },
   { to: "/proxies", label: "Proxies", icon: Globe },
@@ -49,13 +64,15 @@ export function Layout({
                     "flex w-full items-center gap-2.5 rounded-lg px-3 py-2 text-sm font-medium transition-colors",
                     isActive
                       ? "bg-zinc-800/90 text-white shadow-sm"
-                      : "text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200"
+                      : "text-zinc-400 hover:bg-zinc-900 hover:text-zinc-200",
                   )
                 }
               >
                 {({ isActive }) => (
                   <>
-                    <Icon className={cn("h-4 w-4", isActive ? "text-emerald-400" : "text-zinc-500")} />
+                    <Icon
+                      className={cn("h-4 w-4", isActive ? "text-emerald-400" : "text-zinc-500")}
+                    />
                     {item.label}
                   </>
                 )}
@@ -79,9 +96,9 @@ export function Layout({
         </div>
       </aside>
 
-      {/* Main Content (overflow-y-scroll prevents horizontal shift across routes) */}
-      <main className="flex-1 overflow-y-scroll">
-        <div className="mx-auto max-w-6xl p-6 md:p-8">{children}</div>
+      {/* Main Content (scrollbar-gutter:stable prevents horizontal shift across routes) */}
+      <main className="flex-1 overflow-y-auto [scrollbar-gutter:stable]">
+        <div className="mx-auto max-w-[1440px] p-6 xl:p-8">{children}</div>
       </main>
     </div>
   );

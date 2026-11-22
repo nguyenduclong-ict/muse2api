@@ -7,6 +7,7 @@
 - **Blockers:** Không có.
 
 ## Nhật ký thực hiện
+
 - 2026-11-19: Khởi tạo kế hoạch triển khai từ đặc tả [06_api_playground/spec.md](../../03_features/06_api_playground/spec.md).
 - 2026-11-19: Hoàn thành Backend `config.py` (`voice_preview_dir`), `services/voice_preview.py` (chuẩn hóa tên file, bảng câu mẫu theo 31 nhóm ngôn ngữ, in-flight lock, atomic write, task logging), mở rộng `routers/v1_openai.py` (`GET /v1/audio/voices/{id}/preview`, `GET /v1/voice-previews/{filename}`), và `routers/admin_core.py`.
 - 2026-11-19: Hoàn thành Frontend `Layout.tsx` (thêm link Sidebar Playground), `App.tsx` (route `/playground`), `ApiKeysPage.tsx` (cập nhật schema docs), và `PlaygroundPage.tsx` (4 tab Chat, Images, Video, Audio & Voices, cURL inspector, single Preview/Use button).

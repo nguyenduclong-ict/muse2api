@@ -7,6 +7,7 @@
 - **Blockers:** Không có.
 
 ## Nhật ký thực hiện
+
 - 2026-11-19: Khởi tạo kế hoạch triển khai từ đặc tả [03_tasks_and_media/spec.md](../../03_features/03_tasks_and_media/spec.md) và [request-changes.md](../../03_features/03_tasks_and_media/request-changes.md).
 - 2026-11-19: Hoàn thành Backend (`db.py` migration `input_request_json`, helper sanitize base64 & cắt 32 KB, `list_tasks`/`get_task`; truyền `input_request` từ 5 nguồn trong `v1_openai.py` & `voice_preview.py`; thêm `GET /admin/tasks/{task_id}` trong `admin_core.py`).
 - 2026-11-19: Hoàn thành Frontend (`TasksMediaPage.tsx` thêm nút `View Task Detail` và Modal hiển thị metadata + Input Request JSON + Copy).

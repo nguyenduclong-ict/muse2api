@@ -4,6 +4,7 @@
 - **Liên kết Spec:** [01_accounts_and_keepalive](../../03_features/01_accounts_and_keepalive/spec.md), [design.md](../../03_features/01_accounts_and_keepalive/design.md)
 
 ## Kế hoạch thực hiện
+
 1. **Backend — Unified Refresh & Background WSS Tunnel:**
    - Thêm `POST /admin/accounts/{id}/refresh` và `POST /admin/accounts/refresh` trong `backend/routers/accounts.py`: thực hiện tuần tự/đồng bộ Keep-Alive (session check) + kết nối WSS (`wss_pool.test_account` / giữ tunnel mở) + lấy quota (`fetch_quota_http`), trả về thông tin account đã cập nhật.
    - Bổ sung vòng lặp nền `WSSMonitor` / background loop trong `backend/services/wss_pool.py` (hoặc `backend/main.py` lifespan) định kỳ kiểm tra/duy trì kết nối WSS Tunnel cho các account `enabled=true` (không `expired`, chưa hết quota) và cập nhật `status` / `wss_connected`.

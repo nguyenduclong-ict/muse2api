@@ -7,18 +7,18 @@
 
 - **Backend:**
   - `packages/backend/config.py`: Thêm property `voice_preview_dir` (`data/voice_previews`).
-  - `packages/backend/services/voice_preview.py` *(mới)*: Cài đặt `VoicePreviewService` (chuẩn hóa tên file an toàn, bảng câu mẫu cố định theo nhóm ngôn ngữ, in-flight lock theo `voice_id`, ghi file nguyên tử `.tmp` → `.mp3`, ghi log `tasks` khi cache miss, thống kê & xóa cache).
+  - `packages/backend/services/voice_preview.py` _(mới)_: Cài đặt `VoicePreviewService` (chuẩn hóa tên file an toàn, bảng câu mẫu cố định theo nhóm ngôn ngữ, in-flight lock theo `voice_id`, ghi file nguyên tử `.tmp` → `.mp3`, ghi log `tasks` khi cache miss, thống kê & xóa cache).
   - `packages/backend/main.py`: Tạo thư mục `cfg.voice_preview_dir` khi khởi động và gắn `app.state.voice_preview` vào state.
   - `packages/backend/routers/v1_openai.py`:
     - Cập nhật `GET /v1/audio/voices` (và `/v1/voices`) trả thêm `language_group`, `cached`, `preview_url`.
     - Thêm `GET /v1/audio/voices/{voice_id:path}/preview` (hỗ trợ `response_format=mp3|url|json`, `refresh=true|false`, header `X-Voice-Preview-Cache: HIT|MISS`).
     - Thêm `GET /v1/voice-previews/{filename}` phục vụ file `.mp3` đã cache.
   - `packages/backend/routers/admin_core.py`: Thêm `GET /admin/voices/preview/stats`, `DELETE /admin/voices/preview`, `DELETE /admin/voices/preview/{voice_id:path}`.
-  - `packages/backend/tests/test_voice_preview_cache.py` *(mới)*: Unit & integration tests cho Voice Preview API, cache hit/miss, `refresh=true`, in-flight lock, `CleanupService` isolation và các endpoint `/admin/voices/preview*`.
+  - `packages/backend/tests/test_voice_preview_cache.py` _(mới)_: Unit & integration tests cho Voice Preview API, cache hit/miss, `refresh=true`, in-flight lock, `CleanupService` isolation và các endpoint `/admin/voices/preview*`.
 - **Frontend:**
   - `packages/frontend/src/components/Layout.tsx`: Thêm mục điều hướng **Playground** (`/playground`) ngay dưới **API & Keys**.
   - `packages/frontend/src/App.tsx`: Khai báo route `/playground` trỏ tới `PlaygroundPage`.
-  - `packages/frontend/src/pages/PlaygroundPage.tsx` *(mới)*: Màn hình Playground với 4 tab (Chat, Images, Video, Audio & Voices), giữ state trong phiên khi chuyển tab, tự động dùng API Key từ `GET /admin/apikey`, kèm ngăn xem/copy `cURL` & `Raw Response`.
+  - `packages/frontend/src/pages/PlaygroundPage.tsx` _(mới)_: Màn hình Playground với 4 tab (Chat, Images, Video, Audio & Voices), giữ state trong phiên khi chuyển tab, tự động dùng API Key từ `GET /admin/apikey`, kèm ngăn xem/copy `cURL` & `Raw Response`.
   - `packages/frontend/src/pages/ApiKeysPage.tsx`: Bổ sung tài liệu endpoint `GET /v1/audio/voices/{voice_id}/preview` vào danh sách schema endpoints.
 
 ## Checklist triển khai (đối chiếu AC)

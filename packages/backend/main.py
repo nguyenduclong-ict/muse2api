@@ -20,6 +20,7 @@ from db import Database
 from routers import accounts, admin_core, proxies, v1_openai
 from services.cleanup import CleanupService
 from services.keepalive import KeepAliveService
+from services.reset_service import ResetService
 from services.voice_preview import VoicePreviewService
 from services.wss_pool import WSSPool
 
@@ -47,10 +48,14 @@ async def lifespan(app: FastAPI):
     orphaned = db.fail_orphaned_tasks()
     if orphaned:
         logging.getLogger(__name__).warning("Marked %d orphaned running/queued task(s) as failed on startup", orphaned)
+    recovered_resets = db.recover_resetting_accounts()
+    if recovered_resets:
+        logging.getLogger(__name__).warning("Recovered %d account(s) stuck in 'resetting' state on startup", recovered_resets)
     wss_pool = WSSPool(cfg, db)
     keepalive = KeepAliveService(cfg, db)
     cleanup = CleanupService(cfg, db)
     voice_preview = VoicePreviewService(cfg, db, wss_pool)
+    reset_service = ResetService(cfg, db, wss_pool)
 
     app.state.cfg = cfg
     app.state.db = db
@@ -58,13 +63,16 @@ async def lifespan(app: FastAPI):
     app.state.keepalive = keepalive
     app.state.cleanup = cleanup
     app.state.voice_preview = voice_preview
+    app.state.reset_service = reset_service
 
     keepalive.start()
     cleanup.start()
     wss_pool.start_background()
+    reset_service.start()
     try:
         yield
     finally:
+        reset_service.stop()
         keepalive.stop()
         cleanup.stop()
         wss_pool.stop_background()

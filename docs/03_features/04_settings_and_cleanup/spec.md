@@ -4,16 +4,20 @@
 - **Liên quan:** [Schema Summary](../../02_basic_design/02_database/schema_summary.md), [Non-Functional](../../01_srs/non_functional.md), [OpenAI API & Keys](../02_openai_api_and_keys/spec.md)
 
 ## 1. Mục tiêu & Bối cảnh
-Quản lý cấu hình runtime của hệ thống thông qua UI Settings (`SCR-05`) và lưu bền vững trong bảng `settings` của SQLite (ghi đè `.env` sau khi lưu): **Global System Prompt**, **Voice Languages** và **Media Cleanup**.
+
+Quản lý cấu hình runtime của hệ thống thông qua UI Settings (`SCR-05`) và lưu bền vững trong bảng `settings` của SQLite (ghi đè `.env` sau khi lưu): **Global System Prompt**, **Voice Languages**, **Media Cleanup** và **Auto Reset Muse**.
 
 ## 2. Phạm vi
+
 - **In Scope:**
   - Bật/tắt & chỉnh sửa Global System Prompt (có Reset Default).
   - Bật/tắt & chọn danh sách ngôn ngữ giọng đọc TTS được hỗ trợ (**Voice Languages**), đồng bộ trực tiếp tới `GET /v1/audio/voices` và `POST /v1/audio/speech`.
   - Cấu hình chính sách dọn dẹp `data/media/` (`retention_days`, `max_gb`, `interval_minutes`) và chạy dọn thủ công.
+  - Cấu hình chính sách tự động đặt lại Muse định kỳ toàn cục (**Auto Reset Muse**: `enabled`, `interval_minutes`) và nút chạy kiểm tra các tài khoản đến hạn ngay (**Run Due Resets Now**).
 - **Out of Scope:** Quản lý biến môi trường cấp OS, restart server từ UI, hoặc ẩn/hiện lẻ từng `voice_id` cụ thể.
 
 ## 3. Yêu cầu chức năng (`FR`)
+
 - **FR-301 (Global System Prompt):**
   - Lưu 2 trường `enabled` (mặc định `false`) và `prompt` (mặc định nội dung session-isolation).
   - Cho phép chỉnh sửa, bật/tắt, và **Reset to Default**.
@@ -27,8 +31,13 @@ Quản lý cấu hình runtime của hệ thống thông qua UI Settings (`SCR-0
   - `GET /admin/settings` trả thêm `voice_languages` và `available_voice_languages` (danh sách 31 nhóm ngôn ngữ / quốc gia chuẩn kèm số lượng giọng thực tế từng nhóm: `[{ "name": str, "count": int }, ...]`).
   - `POST /admin/settings` nhận thêm trường tùy chọn `voice_languages` để cập nhật cấu hình ngay lập tức không cần khởi động lại server.
   - Giao diện **Settings** (`SCR-05`) bổ sung card **Voice Languages** gồm công tắc bật/tắt (`Switch`), lưới chọn nhiều ngôn ngữ / quốc gia hiển thị tên và số giọng (`English (US) (541)`, `English (UK) (200)`, `Vietnamese (7)`, `Japanese (6)`...), nút **Select All**, **Clear** và **Save Voice Languages**.
+- **FR-305 (Auto Reset Muse Policy):**
+  - Lưu bản ghi `auto_reset` trong bảng `settings` gồm `{ "enabled": bool, "interval_minutes": int }` (mặc định `enabled = false`, `interval_minutes = 1440` tương ứng 24 giờ).
+  - `GET /admin/settings` trả thêm `auto_reset`; `POST /admin/settings` nhận thêm trường tùy chọn `auto_reset` để cập nhật cấu hình và áp dụng ngay cho `ResetService` mà không cần khởi động lại server.
+  - Giao diện **Settings** (`SCR-05`) bổ sung card **Auto Reset Muse** gồm công tắc bật/tắt (`Switch`), ô nhập `Interval (Minutes, min 60)`, nút **Run Due Resets Now** (`POST /admin/accounts/reset-due`) và nút **Save Auto Reset**.
 
 ## 4. Quy tắc nghiệp vụ (`BR`)
+
 - **BR-301:** `interval_minutes` luôn được kẹp tối thiểu `>= 5` phút ở backend để tránh quét ổ đĩa liên tục.
 - **BR-302:** Khi `Global System Prompt` tắt (`enabled=false`), không chèn `<system>...</system>` vào request gửi qua WSS.
 - **BR-303 (Ánh xạ 31 Nhóm Ngôn ngữ / Quốc gia Chuẩn cho Danh mục Giọng):**
@@ -71,9 +80,14 @@ Quản lý cấu hình runtime của hệ thống thông qua UI Settings (`SCR-0
   - Khi `voice_languages.enabled == false` **hoặc** `voice_languages.languages` rỗng (`[]`), bộ lọc không hoạt động — hệ thống cho phép toàn bộ 1,218 giọng.
   - Khi lưu qua `POST /admin/settings` hoặc đọc từ DB cũ, backend đối chiếu không phân biệt hoa thường với danh mục 31 nhóm chuẩn, chuẩn hóa về tên chính tắc (canonical name), loại trùng và bỏ qua giá trị không hợp lệ.
   - **Tương thích ngược:** Nếu đầu vào hoặc cấu hình DB cũ chứa giá trị `"English"` (không phân biệt hoa thường), backend tự động mở rộng (expand) thành toàn bộ 13 nhóm `English (*)`.
+- **BR-305 (Ràng buộc chu kỳ & công tắc toàn cục Auto-Reset):**
+  - `auto_reset.interval_minutes` luôn được kẹp tối thiểu `>= 60` phút ở backend để tránh đặt lại VM liên tục gây rate-limit từ `muse.ai`.
+  - Khi `auto_reset.enabled == false`, `ResetService` bỏ qua toàn bộ tài khoản dù từng tài khoản có bật `auto_reset = true`. Chi tiết điều kiện đến hạn từng tài khoản tuân thủ [Accounts & Keep-Alive Spec](../01_accounts_and_keepalive/spec.md) (`BR-007`, `BR-008`).
 
 ## 5. Tiêu chí nghiệm thu (`AC`)
+
 - **AC-301:** Lưu `Global System Prompt` với `enabled=true` áp dụng ngay cho request `/v1/chat/completions` tiếp theo mà không cần restart backend.
 - **AC-302:** Chạy **Run Cleanup Now** khi `data/media/` vượt `max_gb` hoặc có file quá `retention_days` xóa đúng các file cũ nhất và trả về thống kê chính xác.
 - **AC-303:** Trên màn hình **Settings** (`SCR-05`), `GET /admin/settings` trả đủ 31 nhóm trong `available_voice_languages` (tổng count = 1,218, trong đó `English (US)` = 541, `English (UK)` = 200); khi bật `Voice Languages`, chọn `English (US)`, `Vietnamese`, `Japanese` và bấm **Save Voice Languages**, trạng thái lưu bền vững trong SQLite và áp dụng ngay cho `GET /v1/audio/voices` lẫn `POST /v1/audio/speech` mà không cần restart backend.
 - **AC-304:** Khi tắt công tắc `Voice Languages` (`enabled=false`) hoặc bỏ chọn tất cả (`languages=[]`) rồi lưu, `GET /v1/audio/voices` trả lại toàn bộ 1,218 giọng và `POST /v1/audio/speech` cho phép toàn bộ giọng hợp lệ; khi cấu hình DB cũ có `"English"`, hệ thống tự động mở rộng đủ 13 nhóm `English (*)`.
+- **AC-305:** Trên màn hình **Settings** (`SCR-05`), `GET /admin/settings` trả `auto_reset` mặc định `{ enabled: false, interval_minutes: 1440 }`; gửi `POST /admin/settings` với `interval_minutes < 60` tự động kẹp về `60`, lưu bền vững trong SQLite và áp dụng cho `ResetService` trong vòng `<= 60s` không cần restart; bấm **Run Due Resets Now** gọi `POST /admin/accounts/reset-due` và hiển thị Toast kết quả.

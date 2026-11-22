@@ -6,6 +6,7 @@ import io
 import json
 import os
 import secrets
+import time
 import zipfile
 from typing import Any
 
@@ -26,6 +27,7 @@ class AccountCreateReq(BaseModel):
     proxy_id: str | None = None
     enabled: bool = True
     supported_models: list[str] | None = None
+    auto_reset: bool = False
 
 
 class AccountPatchReq(BaseModel):
@@ -34,6 +36,7 @@ class AccountPatchReq(BaseModel):
     proxy_id: str | None = None
     enabled: bool | None = None
     supported_models: list[str] | None = None
+    auto_reset: bool | None = None
 
 
 def _serialize_account(acc: dict[str, Any], wss_connected: bool) -> dict[str, Any]:
@@ -52,6 +55,11 @@ def _serialize_account(acc: dict[str, Any], wss_connected: bool) -> dict[str, An
         "has_proxy": bool(eff_proxy),
         "enabled": bool(acc["enabled"]),
         "supported_models": parse_supported_models(acc.get("supported_models_json")),
+        "auto_reset": bool(acc.get("auto_reset", 0)),
+        "last_reset_at": float(acc.get("last_reset_at") or 0),
+        "last_reset_status": acc.get("last_reset_status") or "",
+        "last_reset_error": acc.get("last_reset_error") or "",
+        "requests_since_reset": int(acc.get("requests_since_reset") or 0),
         "status": acc["status"],
         "wss_connected": wss_connected,
         "quota": quota,
@@ -99,6 +107,7 @@ def export_accounts(request: Request):
             "proxy_url": acc.get("effective_proxy_url") or "",
             "enabled": bool(acc["enabled"]),
             "supported_models": parse_supported_models(acc.get("supported_models_json")),
+            "auto_reset": bool(acc.get("auto_reset", 0)),
             "status": acc["status"],
             "quota": json.loads(acc.get("quota_json") or "{}"),
         })
@@ -168,6 +177,7 @@ def create_account(body: AccountCreateReq, request: Request):
         enabled=body.enabled,
         status="unknown",
         supported_models=supported_models,
+        auto_reset=body.auto_reset,
     )
     test_res = pool.test_account(aid)
     if test_res.get("ok"):
@@ -188,6 +198,14 @@ def patch_account(account_id: str, body: AccountPatchReq, request: Request):
     acc = db.get_account(account_id)
     if not acc:
         raise HTTPException(status_code=404, detail="Account not found")
+    if acc.get("status") == "resetting":
+        return {
+            "ok": False,
+            "account_id": account_id,
+            "skipped": True,
+            "error": "Account is currently resetting",
+            "account": _serialize_account(acc, pool.is_connected(account_id)),
+        }
 
     updates: dict[str, Any] = {}
     if body.label is not None:
@@ -216,6 +234,10 @@ def patch_account(account_id: str, body: AccountPatchReq, request: Request):
         except ValueError as exc:
             raise HTTPException(status_code=400, detail=str(exc))
         updates["supported_models_json"] = json.dumps(normalized_models)
+    if body.auto_reset is not None:
+        updates["auto_reset"] = 1 if body.auto_reset else 0
+        if body.auto_reset and not bool(acc.get("auto_reset")) and float(acc.get("last_reset_at") or 0) <= 0:
+            updates["last_reset_at"] = time.time()
 
     updated = db.update_account(account_id, **updates)
     return {"account": _serialize_account(updated, pool.is_connected(account_id))}
@@ -258,6 +280,14 @@ def check_quota(account_id: str, request: Request):
     acc = db.get_account(account_id)
     if not acc:
         raise HTTPException(status_code=404, detail="Account not found")
+    if acc.get("status") == "resetting":
+        return {
+            "ok": False,
+            "account_id": account_id,
+            "skipped": True,
+            "error": "Account is currently resetting",
+            "account": _serialize_account(acc, pool.is_connected(account_id)),
+        }
     cookies = json.loads(acc["cookies_json"])
     proxy_url = acc.get("effective_proxy_url") or ""
     try:
@@ -277,6 +307,14 @@ def _refresh_account_full(app_state: Any, account_id: str) -> dict[str, Any]:
     acc = db.get_account(account_id)
     if not acc:
         raise HTTPException(status_code=404, detail="Account not found")
+    if acc.get("status") == "resetting":
+        return {
+            "ok": False,
+            "account_id": account_id,
+            "skipped": True,
+            "error": "Account is currently resetting",
+            "account": _serialize_account(acc, pool.is_connected(account_id)),
+        }
 
     ka_res = keepalive.run_one(account_id)
     if ka_res.get("status") == "expired":
@@ -326,12 +364,44 @@ def refresh_account(account_id: str, request: Request):
 @router.post("/accounts/refresh")
 def refresh_all_accounts(request: Request):
     db = request.app.state.db
-    enabled_accs = [a for a in db.list_accounts() if a["enabled"]]
+    enabled_accs = [a for a in db.list_accounts() if a["enabled"] and a.get("status") != "resetting"]
     results: list[dict[str, Any]] = []
     if enabled_accs:
         with concurrent.futures.ThreadPoolExecutor(max_workers=min(4, len(enabled_accs))) as ex:
             results = list(ex.map(lambda a: _refresh_account_full(request.app.state, a["id"]), enabled_accs))
     return {"results": results}
+
+
+@router.post("/accounts/reset-due")
+def reset_due_accounts(request: Request):
+    reset_svc = getattr(request.app.state, "reset_service", None)
+    if not reset_svc:
+        raise HTTPException(status_code=503, detail="Reset service unavailable")
+    return reset_svc.trigger_due_async()
+
+
+@router.get("/accounts/reset-logs")
+def reset_logs(request: Request, limit: int = 30, account_id: str | None = None):
+    return {"logs": request.app.state.db.list_reset_logs(limit=limit, account_id=account_id)}
+
+
+@router.post("/accounts/{account_id}/reset", status_code=202)
+def reset_account_manual(account_id: str, request: Request):
+    reset_svc = getattr(request.app.state, "reset_service", None)
+    if not reset_svc:
+        raise HTTPException(status_code=503, detail="Reset service unavailable")
+    pool = request.app.state.wss_pool
+    try:
+        acc = reset_svc.start_manual_reset(account_id)
+    except KeyError:
+        raise HTTPException(status_code=404, detail="Account not found")
+    except RuntimeError as exc:
+        raise HTTPException(status_code=409, detail=str(exc))
+    return {
+        "ok": True,
+        "status": "resetting",
+        "account": _serialize_account(acc, pool.is_connected(account_id)),
+    }
 
 
 @router.post("/accounts/{account_id}/keepalive")

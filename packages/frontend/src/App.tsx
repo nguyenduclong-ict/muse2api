@@ -19,21 +19,26 @@ function ConsoleShell() {
   const { data } = useQuery({
     queryKey: ["dashboard"],
     queryFn: () =>
-      apiFetch<{ pool: { active_wss_tunnels: number; healthy_accounts: number } }>("/admin/dashboard"),
+      apiFetch<{ pool: { active_wss_tunnels: number; healthy_accounts: number } }>(
+        "/admin/dashboard",
+      ),
     refetchInterval: 5000,
   });
 
   // Auto-poll all account quotas every 5 minutes
   useEffect(() => {
-    const timer = setInterval(async () => {
-      try {
-        await apiFetch("/admin/accounts/quota", { method: "POST" });
-        qc.invalidateQueries({ queryKey: ["accounts"] });
-        qc.invalidateQueries({ queryKey: ["dashboard"] });
-      } catch {
-        // silent background poll
-      }
-    }, 5 * 60 * 1000);
+    const timer = setInterval(
+      async () => {
+        try {
+          await apiFetch("/admin/accounts/quota", { method: "POST" });
+          qc.invalidateQueries({ queryKey: ["accounts"] });
+          qc.invalidateQueries({ queryKey: ["dashboard"] });
+        } catch {
+          // silent background poll
+        }
+      },
+      5 * 60 * 1000,
+    );
     return () => clearInterval(timer);
   }, [qc]);
 

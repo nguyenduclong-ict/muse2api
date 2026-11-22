@@ -53,9 +53,13 @@ export function ProxiesPage() {
       setModalOpen(false);
       setProxiesText("");
       if (res.errors?.length) {
-        toast.info(`Imported ${res.imported}, skipped ${res.skipped}. ${res.errors.length} line(s) invalid.`);
+        toast.info(
+          `Imported ${res.imported}, skipped ${res.skipped}. ${res.errors.length} line(s) invalid.`,
+        );
       } else {
-        toast.success(`Imported ${res.imported} proxy(s)${res.skipped ? `, ${res.skipped} skipped` : ""}.`);
+        toast.success(
+          `Imported ${res.imported} proxy(s)${res.skipped ? `, ${res.skipped} skipped` : ""}.`,
+        );
       }
       qc.invalidateQueries({ queryKey: ["proxies"] });
       qc.invalidateQueries({ queryKey: ["accounts"] });
@@ -64,7 +68,10 @@ export function ProxiesPage() {
   });
 
   const checkAllMut = useMutation({
-    mutationFn: () => apiFetch<{ results: { id: string; ok: boolean }[] }>("/admin/proxies/check-all", { method: "POST" }),
+    mutationFn: () =>
+      apiFetch<{ results: { id: string; ok: boolean }[] }>("/admin/proxies/check-all", {
+        method: "POST",
+      }),
     onSuccess: (res) => {
       const okCount = res.results.filter((r) => r.ok).length;
       toast.success(`Checked ${res.results.length} proxy(s): ${okCount} alive.`);
@@ -77,7 +84,9 @@ export function ProxiesPage() {
   const checkMut = useMutation({
     mutationFn: (id: string) => {
       setCheckingId(id);
-      return apiFetch<{ ok: boolean; proxy: ProxyItem }>(`/admin/proxies/${id}/check`, { method: "POST" });
+      return apiFetch<{ ok: boolean; proxy: ProxyItem }>(`/admin/proxies/${id}/check`, {
+        method: "POST",
+      });
     },
     onSuccess: (res) => {
       if (res.ok) {
@@ -95,10 +104,13 @@ export function ProxiesPage() {
   const deleteMut = useMutation({
     mutationFn: (id: string) => {
       setDeletingId(id);
-      return apiFetch<{ ok: boolean; detached_accounts: number }>(`/admin/proxies/${id}`, { method: "DELETE" });
+      return apiFetch<{ ok: boolean; detached_accounts: number }>(`/admin/proxies/${id}`, {
+        method: "DELETE",
+      });
     },
     onSuccess: (res) => {
-      const extra = res.detached_accounts > 0 ? ` (${res.detached_accounts} account(s) detached)` : "";
+      const extra =
+        res.detached_accounts > 0 ? ` (${res.detached_accounts} account(s) detached)` : "";
       toast.success(`Proxy deleted${extra}.`);
       qc.invalidateQueries({ queryKey: ["proxies"] });
       qc.invalidateQueries({ queryKey: ["accounts"] });
@@ -188,7 +200,10 @@ export function ProxiesPage() {
                       <td className="px-4 py-3">
                         <Badge variant={statusVariant(p.status)}>{p.status}</Badge>
                         {p.status === "dead" && p.last_error && (
-                          <div className="mt-1 max-w-[180px] truncate text-[11px] text-rose-400" title={p.last_error}>
+                          <div
+                            className="mt-1 max-w-[180px] truncate text-[11px] text-rose-400"
+                            title={p.last_error}
+                          >
                             {p.last_error}
                           </div>
                         )}
@@ -197,7 +212,10 @@ export function ProxiesPage() {
                       <td className="px-4 py-3 text-xs">
                         <div>{location || "—"}</div>
                         {p.org && (
-                          <div className="max-w-[200px] truncate text-[11px] text-muted-foreground" title={p.org}>
+                          <div
+                            className="max-w-[200px] truncate text-[11px] text-muted-foreground"
+                            title={p.org}
+                          >
                             {p.org}
                           </div>
                         )}
@@ -263,8 +281,9 @@ export function ProxiesPage() {
                   className="font-mono text-xs"
                 />
                 <p className="text-[11px] text-muted-foreground">
-                  Supported formats: <code>scheme://user:pass@host:port</code>, <code>host:port:user:pass</code>,{" "}
-                  <code>user:pass@host:port</code>, or <code>host:port</code> (HTTP/HTTPS/SOCKS4/SOCKS5).
+                  Supported formats: <code>scheme://user:pass@host:port</code>,{" "}
+                  <code>host:port:user:pass</code>, <code>user:pass@host:port</code>, or{" "}
+                  <code>host:port</code> (HTTP/HTTPS/SOCKS4/SOCKS5).
                 </p>
               </div>
               <div className="flex justify-end gap-2 pt-2">

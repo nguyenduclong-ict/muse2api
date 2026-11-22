@@ -1,7 +1,26 @@
 import { useEffect, useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, ChevronLeft, ChevronRight, Copy, Download, ExternalLink, Eye, Music, Trash2, X } from "lucide-react";
-import { Badge, Button, Card, CardContent, CardHeader, CardTitle, Checkbox } from "../components/ui";
+import {
+  Check,
+  ChevronLeft,
+  ChevronRight,
+  Copy,
+  Download,
+  ExternalLink,
+  Eye,
+  Music,
+  Trash2,
+  X,
+} from "lucide-react";
+import {
+  Badge,
+  Button,
+  Card,
+  CardContent,
+  CardHeader,
+  CardTitle,
+  Checkbox,
+} from "../components/ui";
 import { useToast } from "../components/Toast";
 import { apiFetch, formatBytes, formatTimeAgo } from "../lib/api";
 
@@ -55,8 +74,11 @@ function PaginationBar({
     <div className="mt-4 flex flex-wrap items-center justify-between gap-3 border-t border-zinc-800/80 pt-3 text-xs text-zinc-400">
       <div className="flex items-center gap-3">
         <span>
-          Showing <span className="font-mono text-zinc-200">{start}–{end}</span> of{" "}
-          <span className="font-mono text-zinc-200">{total}</span>
+          Showing{" "}
+          <span className="font-mono text-zinc-200">
+            {start}–{end}
+          </span>{" "}
+          of <span className="font-mono text-zinc-200">{total}</span>
         </span>
         <select
           aria-label="Rows per page"
@@ -132,8 +154,14 @@ export function TasksMediaPage() {
   const { data: tasksData } = useQuery({
     queryKey: ["tasks", typeFilter, statusFilter, tasksPage, tasksPageSize],
     queryFn: () =>
-      apiFetch<{ tasks: TaskItem[]; total: number; page: number; page_size: number; total_pages: number }>(
-        `/admin/tasks?type=${encodeURIComponent(typeFilter)}&status=${encodeURIComponent(statusFilter)}&page=${tasksPage}&page_size=${tasksPageSize}`
+      apiFetch<{
+        tasks: TaskItem[];
+        total: number;
+        page: number;
+        page_size: number;
+        total_pages: number;
+      }>(
+        `/admin/tasks?type=${encodeURIComponent(typeFilter)}&status=${encodeURIComponent(statusFilter)}&page=${tasksPage}&page_size=${tasksPageSize}`,
       ),
     refetchInterval: 4000,
   });
@@ -141,9 +169,14 @@ export function TasksMediaPage() {
   const { data: mediaData } = useQuery({
     queryKey: ["media", mediaPage, mediaPageSize],
     queryFn: () =>
-      apiFetch<{ files: MediaItem[]; total: number; page: number; page_size: number; total_pages: number; usage_bytes: number }>(
-        `/admin/media?page=${mediaPage}&page_size=${mediaPageSize}`
-      ),
+      apiFetch<{
+        files: MediaItem[];
+        total: number;
+        page: number;
+        page_size: number;
+        total_pages: number;
+        usage_bytes: number;
+      }>(`/admin/media?page=${mediaPage}&page_size=${mediaPageSize}`),
     refetchInterval: 8000,
   });
 
@@ -207,7 +240,8 @@ export function TasksMediaPage() {
   });
 
   const mediaFiles = mediaData?.files || [];
-  const allSelected = mediaFiles.length > 0 && mediaFiles.every((f) => selectedMedia.has(f.filename));
+  const allSelected =
+    mediaFiles.length > 0 && mediaFiles.every((f) => selectedMedia.has(f.filename));
   const someSelected = selectedMedia.size > 0 && !allSelected;
 
   const toggleSelectAll = () => {
@@ -232,7 +266,9 @@ export function TasksMediaPage() {
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight text-white">Tasks & Media</h1>
-          <p className="text-sm text-zinc-400">Monitor generation history and manage local media files.</p>
+          <p className="text-sm text-zinc-400">
+            Monitor generation history and manage local media files.
+          </p>
         </div>
         <div className="inline-flex rounded-lg border border-zinc-800 bg-zinc-900 p-1">
           <button
@@ -286,7 +322,12 @@ export function TasksMediaPage() {
                 <option value="failed">Failed</option>
               </select>
             </div>
-            <Button size="sm" variant="outline" loading={clearTasksMut.isPending} onClick={() => clearTasksMut.mutate()}>
+            <Button
+              size="sm"
+              variant="outline"
+              loading={clearTasksMut.isPending}
+              onClick={() => clearTasksMut.mutate()}
+            >
               Clear Completed
             </Button>
           </CardHeader>
@@ -324,7 +365,11 @@ export function TasksMediaPage() {
                         <td className="py-2.5 pr-4">
                           <Badge
                             variant={
-                              t.status === "completed" ? "success" : t.status === "failed" ? "danger" : "warning"
+                              t.status === "completed"
+                                ? "success"
+                                : t.status === "failed"
+                                  ? "danger"
+                                  : "warning"
                             }
                           >
                             {t.status}
@@ -451,13 +496,24 @@ export function TasksMediaPage() {
                             title="Preview media"
                           >
                             {f.kind === "video" ? (
-                              <video src={f.url} muted playsInline preload="metadata" className="h-full w-full object-cover" />
+                              <video
+                                src={f.url}
+                                muted
+                                playsInline
+                                preload="metadata"
+                                className="h-full w-full object-cover"
+                              />
                             ) : f.kind === "audio" ? (
                               <div className="flex h-full w-full items-center justify-center bg-zinc-900 text-zinc-400">
                                 <Music className="h-4 w-4 text-indigo-400" />
                               </div>
                             ) : (
-                              <img src={f.url} alt={f.filename} loading="lazy" className="h-full w-full object-cover" />
+                              <img
+                                src={f.url}
+                                alt={f.filename}
+                                loading="lazy"
+                                className="h-full w-full object-cover"
+                              />
                             )}
                           </button>
                         </td>
@@ -471,8 +527,12 @@ export function TasksMediaPage() {
                           </button>
                         </td>
                         <td className="py-2.5 pr-4 capitalize text-zinc-300">{f.kind}</td>
-                        <td className="py-2.5 pr-4 font-mono text-xs text-zinc-400">{formatBytes(f.size_bytes)}</td>
-                        <td className="py-2.5 pr-4 text-xs text-zinc-500">{formatTimeAgo(f.created_at)}</td>
+                        <td className="py-2.5 pr-4 font-mono text-xs text-zinc-400">
+                          {formatBytes(f.size_bytes)}
+                        </td>
+                        <td className="py-2.5 pr-4 text-xs text-zinc-500">
+                          {formatTimeAgo(f.created_at)}
+                        </td>
                         <td className="py-2.5 text-right">
                           <div className="inline-flex items-center gap-1.5">
                             <Button
@@ -534,7 +594,8 @@ export function TasksMediaPage() {
                   {previewMedia.filename}
                 </CardTitle>
                 <p className="text-xs text-zinc-400 capitalize">
-                  {previewMedia.kind} · {formatBytes(previewMedia.size_bytes)} · {formatTimeAgo(previewMedia.created_at)}
+                  {previewMedia.kind} · {formatBytes(previewMedia.size_bytes)} ·{" "}
+                  {formatTimeAgo(previewMedia.created_at)}
                 </p>
               </div>
               <div className="flex items-center gap-2 shrink-0">
@@ -553,7 +614,12 @@ export function TasksMediaPage() {
                 >
                   <ExternalLink className="h-3.5 w-3.5" /> Open
                 </a>
-                <Button size="sm" variant="ghost" onClick={() => setPreviewMedia(null)} title="Close">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setPreviewMedia(null)}
+                  title="Close"
+                >
                   <X className="h-4 w-4" />
                 </Button>
               </div>
@@ -572,12 +638,7 @@ export function TasksMediaPage() {
                   <div className="flex h-20 w-20 items-center justify-center rounded-full border border-zinc-800 bg-zinc-900 text-indigo-400">
                     <Music className="h-10 w-10" />
                   </div>
-                  <audio
-                    src={previewMedia.url}
-                    controls
-                    autoPlay
-                    className="w-full max-w-lg"
-                  />
+                  <audio src={previewMedia.url} controls autoPlay className="w-full max-w-lg" />
                 </div>
               ) : (
                 <img
@@ -607,7 +668,8 @@ export function TasksMediaPage() {
                 </CardTitle>
                 {taskDetail && (
                   <p className="mt-0.5 text-xs text-zinc-400">
-                    <span className="capitalize">{taskDetail.type}</span> · {taskDetail.model || "-"} ·{" "}
+                    <span className="capitalize">{taskDetail.type}</span> ·{" "}
+                    {taskDetail.model || "-"} ·{" "}
                     {taskDetail.account_label || taskDetail.account_id || "-"} ·{" "}
                     {taskDetail.latency_ms ? `${(taskDetail.latency_ms / 1000).toFixed(1)}s` : "-"}
                   </p>
@@ -626,20 +688,33 @@ export function TasksMediaPage() {
                       setTimeout(() => setCopiedInputJson(false), 1800);
                     }}
                   >
-                    {copiedInputJson ? <Check className="h-3.5 w-3.5 text-emerald-400" /> : <Copy className="h-3.5 w-3.5" />}
+                    {copiedInputJson ? (
+                      <Check className="h-3.5 w-3.5 text-emerald-400" />
+                    ) : (
+                      <Copy className="h-3.5 w-3.5" />
+                    )}
                     {copiedInputJson ? "Copied" : "Copy JSON"}
                   </Button>
                 )}
-                <Button size="sm" variant="ghost" onClick={() => setSelectedTaskId(null)} title="Close">
+                <Button
+                  size="sm"
+                  variant="ghost"
+                  onClick={() => setSelectedTaskId(null)}
+                  title="Close"
+                >
                   <X className="h-4 w-4" />
                 </Button>
               </div>
             </CardHeader>
             <CardContent className="max-h-[75vh] space-y-4 overflow-y-auto bg-zinc-950 p-4">
               {isLoadingTaskDetail ? (
-                <div className="py-8 text-center text-sm text-zinc-400">Loading task details...</div>
+                <div className="py-8 text-center text-sm text-zinc-400">
+                  Loading task details...
+                </div>
               ) : !taskDetail ? (
-                <div className="py-8 text-center text-sm text-rose-400">Failed to load task details.</div>
+                <div className="py-8 text-center text-sm text-rose-400">
+                  Failed to load task details.
+                </div>
               ) : (
                 <>
                   {taskDetail.error_message && (
@@ -655,8 +730,8 @@ export function TasksMediaPage() {
                           taskDetail.status === "completed"
                             ? "success"
                             : taskDetail.status === "failed"
-                            ? "danger"
-                            : "warning"
+                              ? "danger"
+                              : "warning"
                         }
                       >
                         {taskDetail.status}

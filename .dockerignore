@@ -2,6 +2,7 @@
 .gitignore
 .env
 data
+node_modules
 packages/frontend/node_modules
 packages/frontend/dist
 **/.venv

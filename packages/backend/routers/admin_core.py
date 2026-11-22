@@ -31,10 +31,16 @@ class VoiceLanguagesUpdate(BaseModel):
     languages: list[str] = []
 
 
+class AutoResetUpdate(BaseModel):
+    enabled: bool
+    interval_minutes: int = 1440
+
+
 class SettingsPatchReq(BaseModel):
     system_prompt: SystemPromptUpdate | None = None
     media_cleanup: MediaCleanupUpdate | None = None
     voice_languages: VoiceLanguagesUpdate | None = None
+    auto_reset: AutoResetUpdate | None = None
 
 
 @router.get("/dashboard")
@@ -209,6 +215,11 @@ def get_settings(request: Request):
     vl = settings.get("voice_languages") or {"enabled": False, "languages": []}
     vl["languages"] = normalize_voice_languages(vl.get("languages") or [])
     settings["voice_languages"] = vl
+    ar = settings.get("auto_reset") or {"enabled": False, "interval_minutes": 1440}
+    settings["auto_reset"] = {
+        "enabled": bool(ar.get("enabled", False)),
+        "interval_minutes": max(60, int(ar.get("interval_minutes") or 1440)),
+    }
     return settings
 
 
@@ -229,6 +240,11 @@ def update_settings(body: SettingsPatchReq, request: Request):
             "enabled": bool(body.voice_languages.enabled),
             "languages": norm_langs,
         })
+    if body.auto_reset is not None:
+        ar = body.auto_reset.model_dump()
+        ar["enabled"] = bool(ar.get("enabled", False))
+        ar["interval_minutes"] = max(60, int(ar.get("interval_minutes") or 1440))
+        db.update_setting("auto_reset", ar)
     return get_settings(request)
 
 

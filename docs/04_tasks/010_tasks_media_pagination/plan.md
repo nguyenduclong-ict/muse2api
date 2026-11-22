@@ -4,6 +4,7 @@
 - **Liên kết Spec:** [03_tasks_and_media](../../03_features/03_tasks_and_media/spec.md)
 
 ## Kế hoạch thực hiện
+
 1. **Database (`packages/backend/db.py`):**
    - Thêm `count_tasks(task_type="", status="") -> int` đếm tổng số task theo điều kiện lọc.
 2. **Backend API (`packages/backend/routers/admin_core.py`):**

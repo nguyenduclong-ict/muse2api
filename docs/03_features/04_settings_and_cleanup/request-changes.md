@@ -1,5 +1,17 @@
 # Request changes: Settings & Media Cleanup
 
+## 2026-11-22 — Bổ sung cấu hình toàn cục Auto Reset Muse (`auto_reset`)
+
+- **Yêu cầu:** Thêm cấu hình định kỳ đặt lại Muse toàn cục (`enabled`, `interval_minutes`) trên trang Settings và nút kích hoạt chạy ngay cho các tài khoản đến hạn.
+- **Phân loại:** Feature mở rộng
+- **Đặc tả thay đổi:**
+  - `spec.md`: cập nhật `Mục tiêu & Bối cảnh`, `Phạm vi`; bổ sung `FR-305`, `BR-305`, `AC-305`.
+  - `design.md`: bổ sung card **Auto Reset Muse** trên màn hình `SCR-05`.
+  - `logic.md`: cập nhật Sequence Diagram, bảng `UI Event Handlers` và thêm mục validate/khởi tạo `settings.auto_reset`.
+  - `../../02_basic_design/02_database/schema_summary.md`: bổ sung key `auto_reset` vào mô tả bảng `settings`.
+- **Quyết định:** Lưu theo khoảng thời gian lặp lại (`interval_minutes`, mặc định `1440` phút = 24 giờ, kẹp tối thiểu `60` phút ở backend) đồng nhất với `media_cleanup`; giữ `enabled = false` mặc định để Admin chủ động kích hoạt.
+- **Task:** [T-019](../../04_tasks/019_muse_reset_and_auto_reset/plan.md)
+
 ## 2026-11-19 — Tách nhóm `English (1,000)` theo từng quốc gia (31 nhóm chuẩn)
 
 - **Yêu cầu:** Tách nhóm `English` (1,000 giọng) ra theo từng quốc gia nói tiếng Anh để admin kiểm soát chi tiết hơn trên Settings thay vì gom chung 1,000 giọng.

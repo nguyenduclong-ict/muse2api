@@ -4,13 +4,16 @@
 - **Liên quan:** [ERD](../../02_basic_design/02_database/erd.md), [Screens Overview](../../02_basic_design/03_screens_overview.md)
 
 ## 1. Mục tiêu & Bối cảnh
+
 Cung cấp bảng điều khiển Overview (`SCR-01`) và trang Tasks & Media (`SCR-04`) để theo dõi toàn bộ lịch sử tác vụ sinh nội dung (`chat`, `image`, `video`, `speech`), xem tiến trình realtime, xóa task và quản lý thư viện file media trong `data/media/`.
 
 ## 2. Phạm vi
+
 - **In Scope:** Lưu vết task trong SQLite, thống kê 7 ngày cho Overview, lọc task theo loại/trạng thái, xóa từng task hoặc Clear Completed, xem/xóa file media.
 - **Out of Scope:** Chỉnh sửa nội dung media trực tiếp trên UI.
 
 ## 3. Yêu cầu chức năng (`FR`)
+
 - **FR-201 (Ghi nhận Task):** Mọi request tới `/v1/chat/completions`, `/v1/responses`, `/v1/images/*`, `/v1/videos*`, `/v1/audio/speech` và luồng `Voice Preview` đều tạo bản ghi trong bảng `tasks` (`queued`/`running` → `completed`/`failed`), lưu `account_id`, `model`, `prompt_preview`, `input_request_json`, `latency_ms`, `media_filename`, `error_message`.
 - **FR-202 (Overview Dashboard):** `GET /admin/dashboard` trả về: số tài khoản healthy/total, số WSS tunnel đang mở, thống kê task 7 ngày gần nhất, tổng dung lượng `data/media/`, và danh sách `accounts` kèm `quota` (bỏ bảng Recent Tasks khỏi Overview).
 - **FR-203 (Danh sách, Lọc & Phân trang Server Tasks):** `GET /admin/tasks` hỗ trợ lọc theo `type` (`chat`, `image`, `video`, `audio`), `status` (`running`, `completed`, `failed`), và phân trang server qua `page` (mặc định `1`), `page_size` (mặc định `10`, tối đa `100`), trả về `{ tasks, total, page, page_size, total_pages }` (không kèm `input_request_json` để giữ payload nhẹ).
@@ -19,6 +22,7 @@ Cung cấp bảng điều khiển Overview (`SCR-01`) và trang Tasks & Media (`
 - **FR-206 (Xem chi tiết Task & Input Request):** `GET /admin/tasks/{id}` trả về thông tin đầy đủ của 1 task bao gồm `input_request` (đã parse JSON, hoặc object rỗng/null nếu bản ghi cũ chưa có). Trên tab **Tasks History**, mỗi dòng có nút mở Modal **Task Detail** hiển thị metadata và nội dung `Input Request` dạng JSON có nút **Copy**.
 
 ## 4. Quy tắc nghiệp vụ (`BR`)
+
 - **BR-201:** `prompt_preview` chỉ lưu tối đa `200` ký tự đầu để giữ DB gọn nhẹ.
 - **BR-202:** Không cho phép xóa task đang ở trạng thái `running` qua `POST /admin/tasks/clear`.
 - **BR-203 (Zero Layout Shift):** `CardHeader` của bảng Media giữ chiều cao tối thiểu cố định và dành sẵn không gian cho nút `Delete Selected` (`invisible` khi chưa chọn) để thao tác check/uncheck không làm dịch chuyển bảng.
@@ -27,6 +31,7 @@ Cung cấp bảng điều khiển Overview (`SCR-01`) và trang Tasks & Media (`
   - Giới hạn kích thước tối đa của chuỗi `input_request_json` là `32 KB` (`32768` bytes UTF-8). Nếu vượt ngưỡng, cắt gọn các trường chuỗi dài kèm hậu tố `... [truncated]` sao cho kết quả vẫn là JSON hợp lệ.
 
 ## 5. Tiêu chí nghiệm thu (`AC`)
+
 - **AC-201:** Sau khi gọi `/v1/videos`, task xuất hiện với `status=running` và tự động cập nhật sang `completed` kèm `media_filename` khi video tải xong.
 - **AC-202:** Bấm **Clear Completed** xóa toàn bộ task `completed`/`failed` nhưng giữ nguyên task `running`.
 - **AC-203:** Xóa 1 hoặc nhiều file qua `POST /admin/media/delete` sẽ xóa các file vật lý khỏi `data/media/` mà không làm nhảy layout khi chọn checkbox.

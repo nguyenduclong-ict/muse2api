@@ -1,7 +1,16 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
 import { Check, ChevronDown, ChevronRight, Copy, Eye, EyeOff, RefreshCw } from "lucide-react";
-import { Badge, Button, Card, CardContent, CardDescription, CardHeader, CardTitle, Input } from "../components/ui";
+import {
+  Badge,
+  Button,
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+  Input,
+} from "../components/ui";
 import { useToast } from "../components/Toast";
 import { apiFetch } from "../lib/api";
 
@@ -194,7 +203,8 @@ export function ApiKeysPage() {
 
   const { data } = useQuery({
     queryKey: ["apikey"],
-    queryFn: () => apiFetch<{ raw_key: string; created_at: number; rotated_at: number }>("/admin/apikey"),
+    queryFn: () =>
+      apiFetch<{ raw_key: string; created_at: number; rotated_at: number }>("/admin/apikey"),
   });
 
   const rotateMut = useMutation({
@@ -221,19 +231,25 @@ export function ApiKeysPage() {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-semibold tracking-tight text-white">API & Keys</h1>
-        <p className="text-sm text-zinc-400">OpenAI-compatible /v1/* endpoint and single raw Bearer API key.</p>
+        <p className="text-sm text-zinc-400">
+          OpenAI-compatible /v1/* endpoint and single raw Bearer API key.
+        </p>
       </div>
 
       <Card>
         <CardHeader>
           <CardTitle>Client API Key</CardTitle>
           <CardDescription>
-            Stored raw in SQLite for third-party apps. Rotating invalidates the previous key immediately.
+            Stored raw in SQLite for third-party apps. Rotating invalidates the previous key
+            immediately.
           </CardDescription>
         </CardHeader>
         <CardContent className="space-y-4">
           <div className="text-xs text-zinc-400">
-            Base URL: <code className="rounded bg-zinc-950 px-2 py-0.5 text-zinc-200 border border-zinc-800">{baseUrl}</code>
+            Base URL:{" "}
+            <code className="rounded bg-zinc-950 px-2 py-0.5 text-zinc-200 border border-zinc-800">
+              {baseUrl}
+            </code>
           </div>
           <div className="flex flex-wrap items-center gap-2">
             <Input
@@ -247,14 +263,20 @@ export function ApiKeysPage() {
               {revealed ? "Hide" : "Show"}
             </Button>
             <Button variant="outline" className="w-24" onClick={handleCopy}>
-              {copied ? <Check className="h-4 w-4 text-emerald-400" /> : <Copy className="h-4 w-4" />}
+              {copied ? (
+                <Check className="h-4 w-4 text-emerald-400" />
+              ) : (
+                <Copy className="h-4 w-4" />
+              )}
               {copied ? "Copied" : "Copy"}
             </Button>
             <Button
               variant="danger"
               loading={rotateMut.isPending}
               onClick={() => {
-                if (window.confirm("Rotate API key? Existing clients using the old key will get 401.")) {
+                if (
+                  window.confirm("Rotate API key? Existing clients using the old key will get 401.")
+                ) {
                   rotateMut.mutate();
                 }
               }}
@@ -269,14 +291,19 @@ export function ApiKeysPage() {
       <Card>
         <CardHeader>
           <CardTitle>Available /v1/* Endpoints</CardTitle>
-          <CardDescription>Click any endpoint row to expand Input & Output schemas.</CardDescription>
+          <CardDescription>
+            Click any endpoint row to expand Input & Output schemas.
+          </CardDescription>
         </CardHeader>
         <CardContent>
           <div className="space-y-2 text-sm">
             {ENDPOINTS.map((item) => {
               const isOpen = openEp === item.ep;
               return (
-                <div key={item.ep} className="rounded-lg border border-zinc-800/80 bg-zinc-950/60 overflow-hidden">
+                <div
+                  key={item.ep}
+                  className="rounded-lg border border-zinc-800/80 bg-zinc-950/60 overflow-hidden"
+                >
                   <button
                     type="button"
                     onClick={() => setOpenEp(isOpen ? null : item.ep)}
@@ -298,13 +325,17 @@ export function ApiKeysPage() {
                   {isOpen && (
                     <div className="border-t border-zinc-800/80 bg-zinc-950 p-3.5 space-y-3">
                       <div>
-                        <div className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-zinc-400">Input</div>
+                        <div className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-zinc-400">
+                          Input
+                        </div>
                         <pre className="overflow-x-auto rounded-md border border-zinc-800 bg-zinc-900/70 p-2.5 text-[11px] text-zinc-300 font-mono whitespace-pre-wrap">
                           {item.inputDoc}
                         </pre>
                       </div>
                       <div>
-                        <div className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-zinc-400">Output</div>
+                        <div className="mb-1 text-[11px] font-semibold uppercase tracking-wider text-zinc-400">
+                          Output
+                        </div>
                         <pre className="overflow-x-auto rounded-md border border-zinc-800 bg-zinc-900/70 p-2.5 text-[11px] text-emerald-300/90 font-mono whitespace-pre-wrap">
                           {item.outputDoc}
                         </pre>

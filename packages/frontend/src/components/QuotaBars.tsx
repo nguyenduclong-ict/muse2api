@@ -38,11 +38,15 @@ export function QuotaBars({ quota }: { quota?: QuotaInfo }) {
     return <span className="text-xs text-zinc-500">Not checked</span>;
   }
 
-  const weeklyRem = typeof quota.weekly_pct === "number" ? Math.max(0, Math.min(100, 100 - quota.weekly_pct)) : null;
-  const extraRem = typeof quota.extra_pct === "number" ? Math.max(0, Math.min(100, 100 - quota.extra_pct)) : null;
+  const weeklyRem =
+    typeof quota.weekly_pct === "number"
+      ? Math.max(0, Math.min(100, 100 - quota.weekly_pct))
+      : null;
+  const extraRem =
+    typeof quota.extra_pct === "number" ? Math.max(0, Math.min(100, 100 - quota.extra_pct)) : null;
 
   return (
-    <div className="flex flex-col gap-1.5 w-full max-w-[205px]">
+    <div className="flex flex-col gap-1.5 w-full max-w-52">
       {weeklyRem !== null && (
         <div className="relative overflow-hidden rounded-md border border-zinc-800/90 bg-zinc-950/90 px-2.5 pt-1.5 pb-2">
           <div className="flex items-center justify-between gap-2 text-[11px] leading-none">

@@ -12,7 +12,7 @@ export function Card({ className, ...props }: React.HTMLAttributes<HTMLDivElemen
     <div
       className={cn(
         "rounded-xl border border-zinc-800/90 bg-zinc-900/70 text-zinc-100 shadow-sm",
-        className
+        className,
       )}
       {...props}
     />
@@ -24,10 +24,18 @@ export function CardHeader({ className, ...props }: React.HTMLAttributes<HTMLDiv
 }
 
 export function CardTitle({ className, ...props }: React.HTMLAttributes<HTMLHeadingElement>) {
-  return <h3 className={cn("text-sm font-semibold tracking-tight text-zinc-100", className)} {...props} />;
+  return (
+    <h3
+      className={cn("text-sm font-semibold tracking-tight text-zinc-100", className)}
+      {...props}
+    />
+  );
 }
 
-export function CardDescription({ className, ...props }: React.HTMLAttributes<HTMLParagraphElement>) {
+export function CardDescription({
+  className,
+  ...props
+}: React.HTMLAttributes<HTMLParagraphElement>) {
   return <p className={cn("text-xs text-zinc-400", className)} {...props} />;
 }
 
@@ -67,7 +75,9 @@ export function Button({
       className={cn(base, variants[variant], sizes[size], className)}
       {...props}
     >
-      <span className={cn("inline-flex items-center justify-center gap-1.5", loading && "invisible")}>
+      <span
+        className={cn("inline-flex items-center justify-center gap-1.5", loading && "invisible")}
+      >
         {children}
       </span>
       {loading && (
@@ -97,7 +107,7 @@ export function Badge({
       className={cn(
         "inline-flex items-center gap-1 rounded-full border px-2 py-0.5 text-[11px] font-medium",
         variants[variant],
-        className
+        className,
       )}
       {...props}
     />
@@ -109,19 +119,22 @@ export function Input({ className, ...props }: React.InputHTMLAttributes<HTMLInp
     <input
       className={cn(
         "flex h-9 w-full rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-1.5 text-sm text-zinc-100 placeholder:text-zinc-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500/40",
-        className
+        className,
       )}
       {...props}
     />
   );
 }
 
-export function Textarea({ className, ...props }: React.TextareaHTMLAttributes<HTMLTextAreaElement>) {
+export function Textarea({
+  className,
+  ...props
+}: React.TextareaHTMLAttributes<HTMLTextAreaElement>) {
   return (
     <textarea
       className={cn(
         "flex w-full rounded-lg border border-zinc-800 bg-zinc-950 px-3 py-2 text-sm text-zinc-100 placeholder:text-zinc-500 focus:border-blue-500 focus:outline-none focus:ring-1 focus:ring-blue-500/40",
-        className
+        className,
       )}
       {...props}
     />
@@ -147,13 +160,13 @@ export function Switch({
       className={cn(
         "relative inline-flex h-5 w-9 shrink-0 cursor-pointer items-center rounded-full border-2 border-transparent transition-colors",
         checked ? "bg-emerald-500" : "bg-zinc-700",
-        disabled && "opacity-50 cursor-not-allowed"
+        disabled && "opacity-50 cursor-not-allowed",
       )}
     >
       <span
         className={cn(
           "pointer-events-none block h-4 w-4 rounded-full bg-white shadow transition-transform",
-          checked ? "translate-x-4" : "translate-x-0"
+          checked ? "translate-x-4" : "translate-x-0",
         )}
       />
     </button>
@@ -187,7 +200,7 @@ export function Checkbox({
         active
           ? "border-blue-500 bg-blue-600 text-white shadow-xs"
           : "border-zinc-700 bg-zinc-950 text-transparent hover:border-zinc-500",
-        disabled && "opacity-50 cursor-not-allowed"
+        disabled && "opacity-50 cursor-not-allowed",
       )}
     >
       {indeterminate ? (

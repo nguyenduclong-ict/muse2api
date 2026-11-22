@@ -1,6 +1,19 @@
 import { useState } from "react";
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Check, Copy, Download, HeartPulse, Pencil, Plus, Puzzle, RefreshCw, Trash2, Wifi } from "lucide-react";
+import {
+  Check,
+  Copy,
+  Download,
+  HeartPulse,
+  Loader2,
+  Pencil,
+  Plus,
+  Puzzle,
+  RefreshCw,
+  RotateCcw,
+  Trash2,
+  Wifi,
+} from "lucide-react";
 import {
   Badge,
   Button,
@@ -35,7 +48,10 @@ const MODEL_LABEL_MAP: Record<ModelCapability, string> = {
   speech: "Speech",
 };
 
-function toggleModelSelection(current: ModelCapability[], target: ModelCapability): ModelCapability[] {
+function toggleModelSelection(
+  current: ModelCapability[],
+  target: ModelCapability,
+): ModelCapability[] {
   const nextSet = new Set(current);
   if (nextSet.has(target)) nextSet.delete(target);
   else nextSet.add(target);
@@ -96,6 +112,11 @@ export interface AccountItem {
   has_proxy: boolean;
   enabled: boolean;
   supported_models?: ModelCapability[];
+  auto_reset?: boolean;
+  last_reset_at?: number;
+  last_reset_status?: string;
+  last_reset_error?: string;
+  requests_since_reset?: number;
   status: string;
   wss_connected: boolean;
   quota: QuotaInfo;
@@ -112,6 +133,7 @@ export function AccountsPage() {
   const [cookiesRaw, setCookiesRaw] = useState("");
   const [proxyId, setProxyId] = useState("");
   const [supportedModels, setSupportedModels] = useState<ModelCapability[]>(ALL_MODELS);
+  const [autoReset, setAutoReset] = useState(false);
   const [exporting, setExporting] = useState(false);
   const [downloadingExt, setDownloadingExt] = useState(false);
 
@@ -121,7 +143,9 @@ export function AccountsPage() {
   const [editProxyId, setEditProxyId] = useState("");
   const [editEnabled, setEditEnabled] = useState(true);
   const [editSupportedModels, setEditSupportedModels] = useState<ModelCapability[]>(ALL_MODELS);
+  const [editAutoReset, setEditAutoReset] = useState(false);
 
+  const [resetTarget, setResetTarget] = useState<AccountItem | null>(null);
   const [refreshId, setRefreshId] = useState<string | null>(null);
   const [copyId, setCopyId] = useState<string | null>(null);
   const [delId, setDelId] = useState<string | null>(null);
@@ -147,6 +171,7 @@ export function AccountsPage() {
           proxy_id: proxyId || null,
           enabled: true,
           supported_models: supportedModels,
+          auto_reset: autoReset,
         }),
       }),
     onSuccess: () => {
@@ -155,6 +180,7 @@ export function AccountsPage() {
       setCookiesRaw("");
       setProxyId("");
       setSupportedModels(ALL_MODELS);
+      setAutoReset(false);
       toast.success("Account imported and WSS tested.");
       qc.invalidateQueries({ queryKey: ["accounts"] });
       qc.invalidateQueries({ queryKey: ["proxies"] });
@@ -165,7 +191,10 @@ export function AccountsPage() {
 
   const toggleMut = useMutation({
     mutationFn: ({ id, enabled }: { id: string; enabled: boolean }) =>
-      apiFetch(`/admin/accounts/${id}`, { method: "PATCH", body: JSON.stringify({ enabled }) }),
+      apiFetch(`/admin/accounts/${id}`, {
+        method: "PATCH",
+        body: JSON.stringify({ enabled }),
+      }),
     onSuccess: (_, vars) => {
       toast.info(vars.enabled ? "Account enabled." : "Account disabled.");
       qc.invalidateQueries({ queryKey: ["accounts"] });
@@ -180,8 +209,9 @@ export function AccountsPage() {
     setEditProxyId(acc.proxy_id || "");
     setEditEnabled(acc.enabled);
     setEditSupportedModels(
-      acc.supported_models && acc.supported_models.length > 0 ? acc.supported_models : ALL_MODELS
+      acc.supported_models && acc.supported_models.length > 0 ? acc.supported_models : ALL_MODELS,
     );
+    setEditAutoReset(Boolean(acc.auto_reset));
   };
 
   const editMut = useMutation({
@@ -192,6 +222,7 @@ export function AccountsPage() {
         proxy_id: editProxyId || null,
         enabled: editEnabled,
         supported_models: editSupportedModels,
+        auto_reset: editAutoReset,
       };
       if (editCookies.trim()) {
         payload.cookies_raw = editCookies.trim();
@@ -212,12 +243,31 @@ export function AccountsPage() {
     onError: (err: Error) => toast.error(`Update failed: ${err.message}`),
   });
 
+  const resetMuseMut = useMutation({
+    mutationFn: (id: string) =>
+      apiFetch<{ ok: boolean; status: string }>(`/admin/accounts/${id}/reset`, {
+        method: "POST",
+      }),
+    onSuccess: () => {
+      const targetLabel = resetTarget?.label || "account";
+      setResetTarget(null);
+      setEditingAcc(null);
+      toast.info(`Reset Muse started for ${targetLabel}.`);
+      qc.invalidateQueries({ queryKey: ["accounts"] });
+      qc.invalidateQueries({ queryKey: ["dashboard"] });
+    },
+    onError: (err: Error) => toast.error(`Reset failed: ${err.message}`),
+  });
+
   const refreshOneMut = useMutation({
     mutationFn: (id: string) => {
       setRefreshId(id);
-      return apiFetch<{ ok: boolean; error?: string; account?: AccountItem }>(`/admin/accounts/${id}/refresh`, {
-        method: "POST",
-      });
+      return apiFetch<{ ok: boolean; error?: string; account?: AccountItem }>(
+        `/admin/accounts/${id}/refresh`,
+        {
+          method: "POST",
+        },
+      );
     },
     onSuccess: (res) => {
       if (res.ok) toast.success("Refreshed status, WSS tunnel & quota.");
@@ -230,10 +280,15 @@ export function AccountsPage() {
   });
 
   const refreshAllMut = useMutation({
-    mutationFn: () => apiFetch<{ results: { ok: boolean }[] }>("/admin/accounts/refresh", { method: "POST" }),
+    mutationFn: () =>
+      apiFetch<{ results: { ok: boolean }[] }>("/admin/accounts/refresh", {
+        method: "POST",
+      }),
     onSuccess: (res) => {
       const okCount = (res.results || []).filter((r) => r.ok).length;
-      toast.success(`Refreshed ${okCount}/${res.results?.length || 0} enabled accounts (status, WSS & quota).`);
+      toast.success(
+        `Refreshed ${okCount}/${res.results?.length || 0} enabled accounts (status, WSS & quota).`,
+      );
       qc.invalidateQueries({ queryKey: ["accounts"] });
       qc.invalidateQueries({ queryKey: ["dashboard"] });
     },
@@ -321,20 +376,33 @@ export function AccountsPage() {
 
   const accounts = data?.accounts || [];
   const proxies = proxiesData?.proxies || [];
+  const liveEditingAcc = editingAcc
+    ? (accounts.find((a) => a.id === editingAcc.id) ?? editingAcc)
+    : null;
 
   return (
     <div className="space-y-6">
       <div className="flex flex-wrap items-center justify-between gap-3">
         <div>
           <h1 className="text-2xl font-semibold tracking-tight text-white">Accounts</h1>
-          <p className="text-sm text-zinc-400">Import muse.ai cookies, manage WSS tunnels, quota, proxies, and keep-alive.</p>
+          <p className="text-sm text-zinc-400">
+            Import muse.ai cookies, manage WSS tunnels, quota, proxies, and keep-alive.
+          </p>
         </div>
         <div className="flex flex-wrap items-center gap-2">
-          <Button variant="outline" loading={refreshAllMut.isPending} onClick={() => refreshAllMut.mutate()}>
+          <Button
+            variant="outline"
+            loading={refreshAllMut.isPending}
+            onClick={() => refreshAllMut.mutate()}
+          >
             <RefreshCw className="h-4 w-4 text-blue-400" />
             Refresh All
           </Button>
-          <Button variant="outline" loading={keepaliveAllMut.isPending} onClick={() => keepaliveAllMut.mutate()}>
+          <Button
+            variant="outline"
+            loading={keepaliveAllMut.isPending}
+            onClick={() => keepaliveAllMut.mutate()}
+          >
             <HeartPulse className="h-4 w-4 text-emerald-400" />
             Keep-Alive All
           </Button>
@@ -342,13 +410,19 @@ export function AccountsPage() {
             <Puzzle className="h-4 w-4 text-amber-400" />
             Download Extension
           </Button>
-          <Button variant="outline" loading={exporting} onClick={handleExport} disabled={accounts.length === 0}>
+          <Button
+            variant="outline"
+            loading={exporting}
+            onClick={handleExport}
+            disabled={accounts.length === 0}
+          >
             <Download className="h-4 w-4" />
             Export
           </Button>
           <Button
             onClick={() => {
               setSupportedModels(ALL_MODELS);
+              setAutoReset(false);
               setModalOpen(true);
             }}
           >
@@ -367,122 +441,158 @@ export function AccountsPage() {
             <div className="py-6 text-sm text-zinc-400">Loading accounts...</div>
           ) : accounts.length === 0 ? (
             <div className="py-10 text-center text-sm text-zinc-500">
-              No accounts imported yet. Click <span className="text-zinc-300 font-medium">Import Account</span> to add one.
+              No accounts imported yet. Click{" "}
+              <span className="text-zinc-300 font-medium">Import Account</span> to add one.
             </div>
           ) : (
             <div className="overflow-x-auto">
-              <table className="w-full min-w-[960px] table-fixed text-left text-sm">
+              <table className="w-full min-w-[950px] table-fixed text-left text-sm">
                 <thead>
                   <tr className="border-b border-zinc-800 text-xs text-zinc-400">
                     <th className="py-2 pr-2.5 font-medium">Label</th>
-                    <th className="w-[92px] py-2 pr-2.5 font-medium">Status</th>
-                    <th className="w-[144px] py-2 pr-2.5 font-medium">Models</th>
+                    <th className="w-[96px] py-2 pr-2.5 font-medium">Status</th>
+                    <th className="max-w-[176px] py-2 pr-2.5 font-medium">Models</th>
                     <th className="w-[176px] py-2 pr-2.5 font-medium">Quota Remaining</th>
-                    <th className="w-[100px] py-2 pr-2.5 font-medium">WSS Tunnel</th>
-                    <th className="w-[88px] py-2 pr-2.5 font-medium">Proxy</th>
-                    <th className="w-[74px] py-2 pr-2.5 font-medium">Keep-Alive</th>
-                    <th className="w-[58px] py-2 pr-2 font-medium">Enabled</th>
-                    <th className="w-[124px] py-2 pl-2 font-medium text-right sticky right-0 z-10 bg-zinc-900">Actions</th>
+                    <th className="w-[108px] py-2 pr-2.5 font-medium">WSS Tunnel</th>
+                    <th className="w-[92px] py-2 pr-2.5 font-medium">Proxy</th>
+                    <th className="w-[78px] py-2 pr-2.5 font-medium">Keep-Alive</th>
+                    <th className="w-[60px] py-2 pr-2 font-medium">Enabled</th>
+                    <th className="w-[132px] py-2 pl-2 pr-1 font-medium text-right sticky right-0 z-10 bg-zinc-900">
+                      Actions
+                    </th>
                   </tr>
                 </thead>
                 <tbody className="divide-y divide-zinc-800/60">
                   {accounts.map((acc) => {
                     const models =
-                      acc.supported_models && acc.supported_models.length > 0 ? acc.supported_models : ALL_MODELS;
+                      acc.supported_models && acc.supported_models.length > 0
+                        ? acc.supported_models
+                        : ALL_MODELS;
                     return (
-                    <tr key={acc.id} className="group hover:bg-zinc-800/30">
-                      <td className="py-3 pr-2.5 min-w-0">
-                        <div className="truncate font-medium text-zinc-100" title={acc.label}>{acc.label}</div>
-                        <div className="truncate font-mono text-[11px] text-zinc-500" title={`${acc.id} · ${acc.cookie_count} cookies`}>
-                          {acc.id} · {acc.cookie_count} cookies
-                        </div>
-                      </td>
-                      <td className="py-3 pr-2.5 min-w-0">
-                        <Badge
-                          variant={
-                            acc.status === "healthy"
-                              ? "success"
-                              : acc.status === "expired"
-                              ? "danger"
-                              : "warning"
-                          }
-                        >
-                          {acc.status}
-                        </Badge>
-                        {acc.last_error && (
-                          <div className="mt-1 truncate text-[11px] text-rose-400" title={acc.last_error}>
-                            {acc.last_error}
+                      <tr key={acc.id} className="group hover:bg-zinc-800/30">
+                        <td className="py-3 pr-2.5 min-w-0">
+                          <div className="truncate font-medium text-zinc-100" title={acc.label}>
+                            {acc.label}
                           </div>
-                        )}
-                      </td>
-                      <td className="py-3 pr-2.5">
-                        <div className="flex flex-wrap gap-1">
-                          {models.map((m) => (
-                            <Badge key={m} variant="default" className="px-1.5 py-0 text-[10px]">
-                              {MODEL_LABEL_MAP[m] || m}
+                          <div
+                            className="truncate font-mono text-[11px] text-zinc-500"
+                            title={`${acc.id} · ${acc.cookie_count} cookies`}
+                          >
+                            {acc.id} · {acc.cookie_count} cookies
+                          </div>
+                        </td>
+                        <td className="py-3 pr-2.5 min-w-0">
+                          <div className="flex flex-wrap items-center gap-1">
+                            <Badge
+                              variant={
+                                acc.status === "healthy"
+                                  ? "success"
+                                  : acc.status === "expired"
+                                    ? "danger"
+                                    : acc.status === "resetting"
+                                      ? "info"
+                                      : "warning"
+                              }
+                            >
+                              {acc.status === "resetting" && (
+                                <Loader2 className="h-3 w-3 animate-spin" />
+                              )}
+                              {acc.status}
                             </Badge>
-                          ))}
-                        </div>
-                      </td>
-                      <td className="py-3 pr-2.5">
-                        <QuotaBars quota={acc.quota} />
-                      </td>
-                      <td className="py-3 pr-2.5">
-                        {acc.wss_connected ? (
-                          <Badge variant="info">
-                            <Wifi className="h-3 w-3" /> Connected
-                          </Badge>
-                        ) : (
-                          <span className="text-xs text-zinc-500">Idle</span>
-                        )}
-                      </td>
-                      <td className="py-3 pr-2.5 min-w-0 font-mono text-xs text-zinc-300">
-                        {!acc.has_proxy ? (
-                          <span className="text-zinc-500">No proxy</span>
-                        ) : acc.proxy_ip ? (
-                          <div className="truncate" title={acc.proxy_masked}>{acc.proxy_ip}</div>
-                        ) : (
-                          <div className="truncate" title={acc.proxy_masked}>{acc.proxy_masked}</div>
-                        )}
-                      </td>
-                      <td className="py-3 pr-2.5 whitespace-nowrap text-xs text-zinc-400">{formatTimeAgo(acc.last_keepalive_at)}</td>
-                      <td className="py-3 pr-2">
-                        <Switch
-                          checked={acc.enabled}
-                          onCheckedChange={(v) => toggleMut.mutate({ id: acc.id, enabled: v })}
-                        />
-                      </td>
-                      <td className="py-3 pl-2 text-right sticky right-0 z-10 bg-zinc-900 group-hover:bg-zinc-800">
-                        <div className="inline-flex items-center justify-end gap-1">
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            onClick={() => openEditModal(acc)}
-                            title="Edit account"
-                          >
-                            <Pencil className="h-3.5 w-3.5" />
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="outline"
-                            loading={refreshId === acc.id}
-                            onClick={() => refreshOneMut.mutate(acc.id)}
-                            title="Refresh status, WSS tunnel & quota"
-                          >
-                            <RefreshCw className="h-3.5 w-3.5" />
-                          </Button>
-                          <Button
-                            size="sm"
-                            variant="danger"
-                            loading={delId === acc.id}
-                            onClick={() => deleteMut.mutate(acc.id)}
-                            title="Delete account"
-                          >
-                            <Trash2 className="h-3.5 w-3.5" />
-                          </Button>
-                        </div>
-                      </td>
-                    </tr>
+                            {acc.auto_reset && (
+                              <Badge
+                                variant="default"
+                                className="px-1.5 py-0 text-[10px]"
+                                title={`Auto Reset enabled · Last reset: ${formatTimeAgo(acc.last_reset_at || 0)} · Requests: ${acc.requests_since_reset ?? 0}`}
+                              >
+                                Auto
+                              </Badge>
+                            )}
+                          </div>
+                          {acc.last_error && (
+                            <div
+                              className="mt-1 truncate text-[11px] text-rose-400"
+                              title={acc.last_error}
+                            >
+                              {acc.last_error}
+                            </div>
+                          )}
+                        </td>
+                        <td className="py-3 pr-2.5">
+                          <div className="flex flex-wrap gap-1">
+                            {models.map((m) => (
+                              <Badge key={m} variant="default" className="px-1.5 py-0 text-[10px]">
+                                {MODEL_LABEL_MAP[m] || m}
+                              </Badge>
+                            ))}
+                          </div>
+                        </td>
+                        <td className="py-3 pr-2.5">
+                          <QuotaBars quota={acc.quota} />
+                        </td>
+                        <td className="py-3 pr-2.5">
+                          {acc.wss_connected ? (
+                            <Badge variant="info">
+                              <Wifi className="h-3 w-3" /> Connected
+                            </Badge>
+                          ) : (
+                            <span className="text-xs text-zinc-500">Idle</span>
+                          )}
+                        </td>
+                        <td className="py-3 pr-2.5 min-w-0 font-mono text-xs text-zinc-300">
+                          {!acc.has_proxy ? (
+                            <span className="text-zinc-500">No proxy</span>
+                          ) : acc.proxy_ip ? (
+                            <div className="truncate" title={acc.proxy_masked}>
+                              {acc.proxy_ip}
+                            </div>
+                          ) : (
+                            <div className="truncate" title={acc.proxy_masked}>
+                              {acc.proxy_masked}
+                            </div>
+                          )}
+                        </td>
+                        <td className="py-3 pr-2.5 whitespace-nowrap text-xs text-zinc-400">
+                          {formatTimeAgo(acc.last_keepalive_at)}
+                        </td>
+                        <td className="py-3 pr-2">
+                          <Switch
+                            checked={acc.enabled}
+                            onCheckedChange={(v) => toggleMut.mutate({ id: acc.id, enabled: v })}
+                          />
+                        </td>
+                        <td className="py-3 pl-2 pr-1 text-right sticky right-0 z-10 bg-zinc-900 group-hover:bg-zinc-800">
+                          <div className="inline-flex items-center justify-end gap-1">
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              onClick={() => openEditModal(acc)}
+                              title="Edit account"
+                            >
+                              <Pencil className="h-3.5 w-3.5" />
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="outline"
+                              loading={refreshId === acc.id}
+                              disabled={acc.status === "resetting"}
+                              onClick={() => refreshOneMut.mutate(acc.id)}
+                              title="Refresh status, WSS tunnel & quota"
+                            >
+                              <RefreshCw className="h-3.5 w-3.5" />
+                            </Button>
+                            <Button
+                              size="sm"
+                              variant="danger"
+                              loading={delId === acc.id}
+                              onClick={() => deleteMut.mutate(acc.id)}
+                              title="Delete account"
+                            >
+                              <Trash2 className="h-3.5 w-3.5" />
+                            </Button>
+                          </div>
+                        </td>
+                      </tr>
                     );
                   })}
                 </tbody>
@@ -501,10 +611,16 @@ export function AccountsPage() {
             <CardContent className="space-y-4">
               <div className="space-y-1.5">
                 <label className="text-xs font-medium text-zinc-300">Account Label</label>
-                <Input placeholder="e.g. muse-01" value={label} onChange={(e) => setLabel(e.target.value)} />
+                <Input
+                  placeholder="e.g. muse-01"
+                  value={label}
+                  onChange={(e) => setLabel(e.target.value)}
+                />
               </div>
               <div className="space-y-1.5">
-                <label className="text-xs font-medium text-zinc-300">Cookie Header String or JSON</label>
+                <label className="text-xs font-medium text-zinc-300">
+                  Cookie Header String or JSON
+                </label>
                 <Textarea
                   rows={5}
                   className="font-mono text-xs"
@@ -523,14 +639,23 @@ export function AccountsPage() {
                   <option value="">No proxy</option>
                   {proxies.map((p) => (
                     <option key={p.id} value={p.id}>
-                      {p.proxy_masked}{p.ip ? ` — ${p.ip}` : ""} ({p.status})
+                      {p.proxy_masked}
+                      {p.ip ? ` — ${p.ip}` : ""} ({p.status})
                     </option>
                   ))}
                 </select>
               </div>
               <SupportedModelsPicker selected={supportedModels} onChange={setSupportedModels} />
+              <div className="flex items-center justify-between rounded-md border border-zinc-800 bg-zinc-950/60 px-3 py-2">
+                <span className="text-xs font-medium text-zinc-300">
+                  Auto Reset (Periodic Reset Muse)
+                </span>
+                <Switch checked={autoReset} onCheckedChange={setAutoReset} />
+              </div>
               <div className="flex justify-end gap-2 pt-2">
-                <Button variant="ghost" onClick={() => setModalOpen(false)}>Cancel</Button>
+                <Button variant="ghost" onClick={() => setModalOpen(false)}>
+                  Cancel
+                </Button>
                 <Button
                   loading={createMut.isPending}
                   onClick={() => createMut.mutate()}
@@ -544,11 +669,11 @@ export function AccountsPage() {
         </div>
       )}
 
-      {editingAcc && (
+      {liveEditingAcc && (
         <div className="fixed inset-0 z-50 flex items-center justify-center bg-black/70 p-4 backdrop-blur-xs">
           <Card className="w-full max-w-lg border-zinc-700 bg-zinc-900">
             <CardHeader>
-              <CardTitle>Edit Account — {editingAcc.label}</CardTitle>
+              <CardTitle>Edit Account — {liveEditingAcc.label}</CardTitle>
             </CardHeader>
             <CardContent className="space-y-4">
               <div className="space-y-1.5">
@@ -561,12 +686,14 @@ export function AccountsPage() {
               </div>
               <div className="space-y-1.5">
                 <div className="flex items-center justify-between gap-2">
-                  <label className="text-xs font-medium text-zinc-300">New Cookie String or JSON (Optional)</label>
+                  <label className="text-xs font-medium text-zinc-300">
+                    New Cookie String or JSON (Optional)
+                  </label>
                   <Button
                     size="sm"
                     variant="outline"
-                    loading={copyId === editingAcc.id}
-                    onClick={() => handleCopyCookie(editingAcc)}
+                    loading={copyId === liveEditingAcc.id}
+                    onClick={() => handleCopyCookie(liveEditingAcc)}
                     title="Copy current cookie string to clipboard"
                   >
                     <Copy className="h-3.5 w-3.5" /> Copy Cookie String
@@ -590,24 +717,107 @@ export function AccountsPage() {
                   <option value="">No proxy</option>
                   {proxies.map((p) => (
                     <option key={p.id} value={p.id}>
-                      {p.proxy_masked}{p.ip ? ` — ${p.ip}` : ""} ({p.status})
+                      {p.proxy_masked}
+                      {p.ip ? ` — ${p.ip}` : ""} ({p.status})
                     </option>
                   ))}
                 </select>
               </div>
-              <SupportedModelsPicker selected={editSupportedModels} onChange={setEditSupportedModels} />
+              <SupportedModelsPicker
+                selected={editSupportedModels}
+                onChange={setEditSupportedModels}
+              />
               <div className="flex items-center justify-between rounded-md border border-zinc-800 bg-zinc-950/60 px-3 py-2">
                 <span className="text-xs font-medium text-zinc-300">Enabled in Pool</span>
                 <Switch checked={editEnabled} onCheckedChange={setEditEnabled} />
               </div>
-              <div className="flex justify-end gap-2 pt-2">
-                <Button variant="ghost" onClick={() => setEditingAcc(null)}>Cancel</Button>
+              <div className="flex items-center justify-between rounded-md border border-zinc-800 bg-zinc-950/60 px-3 py-2">
+                <span className="text-xs font-medium text-zinc-300">
+                  Auto Reset (Periodic Reset Muse)
+                </span>
+                <Switch checked={editAutoReset} onCheckedChange={setEditAutoReset} />
+              </div>
+              <div className="rounded-md border border-zinc-800/80 bg-zinc-950/40 px-3 py-2 text-xs text-zinc-400 space-y-1">
+                <div className="flex items-center justify-between">
+                  <span>Last Reset</span>
+                  <span className="font-mono text-zinc-200">
+                    {formatTimeAgo(liveEditingAcc.last_reset_at || 0)}
+                    {liveEditingAcc.last_reset_status
+                      ? ` (${liveEditingAcc.last_reset_status})`
+                      : ""}
+                  </span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span>Requests since reset</span>
+                  <span className="font-mono text-zinc-200">
+                    {liveEditingAcc.requests_since_reset ?? 0}
+                  </span>
+                </div>
+                {liveEditingAcc.last_reset_error && (
+                  <div
+                    className="truncate text-[11px] text-rose-400"
+                    title={liveEditingAcc.last_reset_error}
+                  >
+                    {liveEditingAcc.last_reset_error}
+                  </div>
+                )}
+              </div>
+              <div className="flex items-center justify-between gap-2 pt-2">
                 <Button
-                  loading={editMut.isPending}
-                  onClick={() => editMut.mutate()}
-                  disabled={!editLabel.trim() || editSupportedModels.length === 0}
+                  variant="outline"
+                  loading={liveEditingAcc.status === "resetting"}
+                  disabled={liveEditingAcc.status === "resetting"}
+                  onClick={() => setResetTarget(liveEditingAcc)}
+                  title="Reset Muse VM"
                 >
-                  Save Changes
+                  <RotateCcw className="h-3.5 w-3.5 text-amber-400" />
+                  Reset Muse
+                </Button>
+                <div className="flex items-center gap-2">
+                  <Button variant="ghost" onClick={() => setEditingAcc(null)}>
+                    Cancel
+                  </Button>
+                  <Button
+                    loading={editMut.isPending}
+                    onClick={() => editMut.mutate()}
+                    disabled={!editLabel.trim() || editSupportedModels.length === 0}
+                  >
+                    Save Changes
+                  </Button>
+                </div>
+              </div>
+            </CardContent>
+          </Card>
+        </div>
+      )}
+
+      {resetTarget && (
+        <div className="fixed inset-0 z-[60] flex items-center justify-center bg-black/70 p-4 backdrop-blur-xs">
+          <Card className="w-full max-w-md border-zinc-700 bg-zinc-900">
+            <CardHeader>
+              <CardTitle>Reset Muse — {resetTarget.label}</CardTitle>
+            </CardHeader>
+            <CardContent className="space-y-4">
+              <p className="text-sm text-zinc-300 leading-relaxed">
+                This will permanently delete chat history, files, and active tasks on the{" "}
+                <span className="font-medium text-white">muse.ai</span> VM for this account. Any
+                in-flight <code className="font-mono text-xs text-zinc-200">/v1/*</code> requests
+                will be drained (up to 30s) before resetting.
+              </p>
+              <div className="flex justify-end gap-2 pt-2">
+                <Button
+                  variant="ghost"
+                  onClick={() => setResetTarget(null)}
+                  disabled={resetMuseMut.isPending}
+                >
+                  Cancel
+                </Button>
+                <Button
+                  variant="danger"
+                  loading={resetMuseMut.isPending}
+                  onClick={() => resetMuseMut.mutate(resetTarget.id)}
+                >
+                  Confirm Reset
                 </Button>
               </div>
             </CardContent>

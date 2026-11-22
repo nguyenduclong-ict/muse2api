@@ -12,12 +12,13 @@ function hideClearConfirm() {
 }
 
 async function clearMuseCookies() {
-  const existing = await chrome.cookies.getAll({ url: MUSE_URL });
+  const existing = await chrome.cookies.getAll({ domain: "muse.ai" });
   let removed = 0;
   for (const c of existing) {
+    const protocol = c.secure ? "https" : "http";
     const domain = c.domain ? c.domain.replace(/^\./, "") : "muse.ai";
     const path = c.path || "/";
-    const url = `https://${domain}${path}`;
+    const url = `${protocol}://${domain}${path}`;
     const res = await chrome.cookies.remove({
       url,
       name: c.name,
@@ -26,6 +27,79 @@ async function clearMuseCookies() {
     if (res) removed += 1;
   }
   return { total: existing.length, removed };
+}
+
+async function clearMuseSiteData() {
+  let tabs = [];
+  try {
+    tabs = await chrome.tabs.query({
+      url: ["https://muse.ai/*", "https://*.muse.ai/*"],
+    });
+  } catch (_) {
+    tabs = [];
+  }
+
+  const originSet = new Set([
+    "https://muse.ai",
+    "https://www.muse.ai",
+    "http://muse.ai",
+    "http://www.muse.ai",
+  ]);
+  for (const tab of tabs) {
+    if (!tab.url) continue;
+    try {
+      originSet.add(new URL(tab.url).origin);
+    } catch (_) {
+      // Ignore invalid or restricted tab URLs
+    }
+  }
+  const origins = Array.from(originSet);
+
+  for (const tab of tabs) {
+    if (tab.id == null) continue;
+    try {
+      await chrome.scripting.executeScript({
+        target: { tabId: tab.id },
+        func: () => {
+          try {
+            window.sessionStorage.clear();
+          } catch (_) {}
+          try {
+            window.localStorage.clear();
+          } catch (_) {}
+        },
+      });
+    } catch (_) {
+      // Ignore discarded/restricted tabs so site data removal continues
+    }
+  }
+
+  await chrome.browsingData.remove(
+    { origins },
+    {
+      cache: true,
+      cacheStorage: true,
+      cookies: true,
+      fileSystems: true,
+      indexedDB: true,
+      localStorage: true,
+      serviceWorkers: true,
+    },
+  );
+
+  await clearMuseCookies();
+
+  let reloadedTabs = 0;
+  for (const tab of tabs) {
+    if (tab.id == null) continue;
+    try {
+      await chrome.tabs.reload(tab.id, { bypassCache: true });
+      reloadedTabs += 1;
+    } catch (_) {
+      // Ignore tabs that were closed or cannot be reloaded
+    }
+  }
+  return { reloadedTabs };
 }
 
 function parseCookiesInput(raw) {
@@ -75,7 +149,7 @@ document.getElementById("copyBtn").addEventListener("click", async () => {
       return;
     }
     const hasSess = cookies.some((c) =>
-      ["hatch_sess", "hatch_vml", "__Host-hatch_one_tap"].includes(c.name)
+      ["hatch_sess", "hatch_vml", "__Host-hatch_one_tap"].includes(c.name),
     );
     if (!hasSess) {
       setStatus("Missing session cookies. Please log in to muse.ai.", "err");
@@ -144,14 +218,17 @@ document.getElementById("confirmClearBtn").addEventListener("click", async () =>
   const cancelBtn = document.getElementById("cancelClearBtn");
   confirmBtn.disabled = true;
   cancelBtn.disabled = true;
-  setStatus("Clearing cookies...");
+  setStatus("Clearing site data...");
 
   try {
-    const { total, removed } = await clearMuseCookies();
-    if (total === 0) {
-      setStatus("No cookies found for muse.ai.", "ok");
+    const { reloadedTabs } = await clearMuseSiteData();
+    if (reloadedTabs > 0) {
+      setStatus(
+        `Cleared site data & reloaded ${reloadedTabs} muse.ai ${reloadedTabs === 1 ? "tab" : "tabs"}.`,
+        "ok",
+      );
     } else {
-      setStatus(`Cleared ${removed} cookies for muse.ai! Refresh muse.ai tab to apply.`, "ok");
+      setStatus("Cleared site data for muse.ai!", "ok");
     }
   } catch (err) {
     setStatus("Clear failed: " + (err?.message || String(err)), "err");

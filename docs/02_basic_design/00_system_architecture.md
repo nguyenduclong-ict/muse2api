@@ -18,6 +18,7 @@ flowchart LR
 ```
 
 ## 2. Kiến trúc lớp giao tiếp `muse.ai` WSS
+
 1. **HTTP Bootstrap:** Gọi `GET https://muse.ai/thread/new` kèm cookie để lấy `__HATCH_GATEWAY_INIT__` (`vmName`, `authToken`, `noiseNotaryToken`).
 2. **Noise Handshake (`Noise_XX_25519_AESGCM_SHA256`):**
    - Kết nối tới `wss://hatch.metaaivm.com/v1/noise?vm_id=...&auth_token=...&notary_token=...&app_id=hatch-web&app_version=1&request_id=...` (kèm `Origin: https://muse.ai` và `Cookie`).
@@ -28,6 +29,7 @@ flowchart LR
    - Toàn bộ media của VM chỉ truy cập được qua tunnel này do `<vm_id>.metaaivm.com` không phân giải qua DNS công cộng.
 
 ## 3. Đóng gói & Triển khai (Git & Docker)
+
 - **Git Repository:** Khởi tạo Git tại root dự án kèm `.gitignore` loại trừ `.env`, `data/` (SQLite DB, media, master key), `node_modules/`, `frontend/dist/`, `__pycache__/`, `.venv/`.
 - **Docker Multi-stage (`Dockerfile`):**
   1. Stage `frontend-builder` (`node:20-alpine`): cài dependencies và chạy `npm run build` tạo `frontend/dist`.

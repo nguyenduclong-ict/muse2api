@@ -29,14 +29,14 @@ sequenceDiagram
 
 ## 2. UI Event Handlers
 
-| Phần tử UI | Sự kiện | API Endpoint | Tham số |
-|---|---|---|---|
-| Filter Type / Status | `onChange` | `GET /admin/tasks` | `?type=...&status=...&page=1&page_size=10` |
-| `View` (Task Detail) | `onClick` | `GET /admin/tasks/{id}` | `task_id` |
-| `Delete` (Task) | `onClick` | `DELETE /admin/tasks/{id}` | `task_id` |
-| `Clear Completed` | `onClick` | `POST /admin/tasks/clear` | `{}` |
-| `Media Library` tab | `onSelect` | `GET /admin/media` | `?page=1&page_size=10` |
-| `Delete` (Media) | `onClick` | `DELETE /admin/media/{name}` | `filename` |
+| Phần tử UI           | Sự kiện    | API Endpoint                 | Tham số                                    |
+| -------------------- | ---------- | ---------------------------- | ------------------------------------------ |
+| Filter Type / Status | `onChange` | `GET /admin/tasks`           | `?type=...&status=...&page=1&page_size=10` |
+| `View` (Task Detail) | `onClick`  | `GET /admin/tasks/{id}`      | `task_id`                                  |
+| `Delete` (Task)      | `onClick`  | `DELETE /admin/tasks/{id}`   | `task_id`                                  |
+| `Clear Completed`    | `onClick`  | `POST /admin/tasks/clear`    | `{}`                                       |
+| `Media Library` tab  | `onSelect` | `GET /admin/media`           | `?page=1&page_size=10`                     |
+| `Delete` (Media)     | `onClick`  | `DELETE /admin/media/{name}` | `filename`                                 |
 
 ## 3. Chuẩn hóa & Giới hạn Input Request (`input_request_json`)
 

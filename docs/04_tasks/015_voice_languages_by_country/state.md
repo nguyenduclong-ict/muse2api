@@ -7,6 +7,7 @@
 - **Blockers:** Không có.
 
 ## Nhật ký thực hiện
+
 - 2026-11-19: Cập nhật `packages/backend/services/voices.py` định nghĩa 31 nhóm ngôn ngữ chuẩn (`ACCENT_TO_LANGUAGE_GROUP`, `ENGLISH_LANGUAGE_GROUPS`, `CANONICAL_LANGUAGE_GROUPS`), tự động expand `English` thành 13 nhóm quốc gia trong `normalize_voice_languages`, và hỗ trợ query `?language=English` khớp cả 13 nhóm.
 - 2026-11-19: Cập nhật `packages/backend/routers/admin_core.py` trong `get_settings()` tự động chuẩn hóa qua `normalize_voice_languages` giúp DB cũ có `"English"` bung đủ 13 nhóm trên UI.
 - 2026-11-19: Cập nhật `packages/frontend/src/pages/SettingsPage.tsx` nâng cấp responsive grid `grid-cols-1 sm:grid-cols-2 md:grid-cols-3 lg:grid-cols-4 xl:grid-cols-5 gap-2` và tooltip title giúp hiển thị rõ ràng 31 mục ngôn ngữ.

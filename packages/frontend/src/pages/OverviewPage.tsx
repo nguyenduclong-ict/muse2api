@@ -1,6 +1,14 @@
 import { useMutation, useQuery, useQueryClient } from "@tanstack/react-query";
-import { Activity, HardDrive, Radio, RefreshCw, Users, Wifi } from "lucide-react";
-import { Badge, Button, Card, CardContent, CardDescription, CardHeader, CardTitle } from "../components/ui";
+import { Activity, HardDrive, Loader2, Radio, RefreshCw, Users, Wifi } from "lucide-react";
+import {
+  Badge,
+  Button,
+  Card,
+  CardContent,
+  CardDescription,
+  CardHeader,
+  CardTitle,
+} from "../components/ui";
 import { QuotaBars } from "../components/QuotaBars";
 import { useToast } from "../components/Toast";
 import { apiFetch, formatBytes, formatTimeAgo } from "../lib/api";
@@ -33,7 +41,8 @@ export function OverviewPage() {
   });
 
   const refreshAllMut = useMutation({
-    mutationFn: () => apiFetch<{ results: { ok: boolean }[] }>("/admin/accounts/quota", { method: "POST" }),
+    mutationFn: () =>
+      apiFetch<{ results: { ok: boolean }[] }>("/admin/accounts/quota", { method: "POST" }),
     onSuccess: (res) => {
       const okCount = (res.results || []).filter((r) => r.ok).length;
       toast.success(`Refreshed quota for ${okCount}/${res.results?.length || 0} enabled accounts.`);
@@ -51,7 +60,9 @@ export function OverviewPage() {
     <div className="space-y-6">
       <div>
         <h1 className="text-2xl font-semibold tracking-tight text-white">Overview</h1>
-        <p className="text-sm text-zinc-400">System health, WSS tunnel pool, and account quota overview.</p>
+        <p className="text-sm text-zinc-400">
+          System health, WSS tunnel pool, and account quota overview.
+        </p>
       </div>
 
       <div className="grid gap-4 sm:grid-cols-2 lg:grid-cols-4">
@@ -62,9 +73,14 @@ export function OverviewPage() {
           </CardHeader>
           <CardContent>
             <div className="text-2xl font-bold font-mono">
-              {data.pool.healthy_accounts} <span className="text-sm font-normal text-zinc-500">/ {data.pool.total_accounts}</span>
+              {data.pool.healthy_accounts}{" "}
+              <span className="text-sm font-normal text-zinc-500">
+                / {data.pool.total_accounts}
+              </span>
             </div>
-            <p className="mt-1 text-xs text-zinc-500">{data.pool.enabled_accounts} enabled in pool</p>
+            <p className="mt-1 text-xs text-zinc-500">
+              {data.pool.enabled_accounts} enabled in pool
+            </p>
           </CardContent>
         </Card>
 
@@ -74,7 +90,9 @@ export function OverviewPage() {
             <Radio className="h-4 w-4 text-blue-400" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold font-mono text-emerald-400">{data.pool.active_wss_tunnels}</div>
+            <div className="text-2xl font-bold font-mono text-emerald-400">
+              {data.pool.active_wss_tunnels}
+            </div>
             <p className="mt-1 text-xs text-zinc-500">Noise_XX encrypted sockets</p>
           </CardContent>
         </Card>
@@ -85,8 +103,12 @@ export function OverviewPage() {
             <HardDrive className="h-4 w-4 text-zinc-400" />
           </CardHeader>
           <CardContent>
-            <div className="text-2xl font-bold font-mono">{formatBytes(data.storage.usage_bytes)}</div>
-            <p className="mt-1 text-xs text-zinc-500">Last cleanup: {formatTimeAgo(data.storage.last_cleanup_at)}</p>
+            <div className="text-2xl font-bold font-mono">
+              {formatBytes(data.storage.usage_bytes)}
+            </div>
+            <p className="mt-1 text-xs text-zinc-500">
+              Last cleanup: {formatTimeAgo(data.storage.last_cleanup_at)}
+            </p>
           </CardContent>
         </Card>
 
@@ -110,7 +132,9 @@ export function OverviewPage() {
         <CardHeader className="flex flex-row flex-wrap items-center justify-between gap-3">
           <div>
             <CardTitle>Accounts & Quota</CardTitle>
-            <CardDescription>Auto-refreshes every 5 minutes · Live WSS & remaining quota</CardDescription>
+            <CardDescription>
+              Auto-refreshes every 5 minutes · Live WSS & remaining quota
+            </CardDescription>
           </div>
           <Button
             size="sm"
@@ -142,8 +166,15 @@ export function OverviewPage() {
                   {data.accounts.map((acc) => (
                     <tr key={acc.id} className="hover:bg-zinc-800/30">
                       <td className="py-2.5 pr-3 min-w-0">
-                        <div className="truncate font-medium text-zinc-100" title={acc.label}>{acc.label}</div>
-                        <div className="truncate font-mono text-[11px] text-zinc-500" title={acc.id}>{acc.id}</div>
+                        <div className="truncate font-medium text-zinc-100" title={acc.label}>
+                          {acc.label}
+                        </div>
+                        <div
+                          className="truncate font-mono text-[11px] text-zinc-500"
+                          title={acc.id}
+                        >
+                          {acc.id}
+                        </div>
                       </td>
                       <td className="py-2.5 pr-3">
                         <Badge
@@ -151,10 +182,15 @@ export function OverviewPage() {
                             acc.status === "healthy"
                               ? "success"
                               : acc.status === "expired"
-                              ? "danger"
-                              : "warning"
+                                ? "danger"
+                                : acc.status === "resetting"
+                                  ? "info"
+                                  : "warning"
                           }
                         >
+                          {acc.status === "resetting" && (
+                            <Loader2 className="h-3 w-3 animate-spin" />
+                          )}
                           {acc.status}
                         </Badge>
                       </td>
@@ -170,7 +206,9 @@ export function OverviewPage() {
                           <span className="text-xs text-zinc-500">Idle</span>
                         )}
                       </td>
-                      <td className="py-2.5 pr-3 whitespace-nowrap text-xs text-zinc-400">{formatTimeAgo(acc.last_keepalive_at)}</td>
+                      <td className="py-2.5 pr-3 whitespace-nowrap text-xs text-zinc-400">
+                        {formatTimeAgo(acc.last_keepalive_at)}
+                      </td>
                       <td className="py-2.5">
                         <Badge variant={acc.enabled ? "success" : "default"}>
                           {acc.enabled ? "Enabled" : "Disabled"}

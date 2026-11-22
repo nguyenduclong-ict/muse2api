@@ -4,6 +4,7 @@
 - **Liên kết Spec:** [00_system_architecture](../../02_basic_design/00_system_architecture.md), [01_accounts_and_keepalive](../../03_features/01_accounts_and_keepalive/spec.md)
 
 ## Kế hoạch thực hiện
+
 1. **Git Initialization:**
    - Tạo `.gitignore` loại trừ `.env`, `data/`, `*.db`, `node_modules/`, `frontend/dist/`, `__pycache__/`, `.venv/`, `*.log`.
    - Chạy `git init` tại root `muse2apiv2`.

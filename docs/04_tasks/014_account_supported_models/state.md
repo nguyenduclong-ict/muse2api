@@ -23,6 +23,7 @@
    - Viết test suite toàn diện tại [test_account_supported_models.py](../../../packages/backend/tests/test_account_supported_models.py). Toàn bộ 24/24 tests backend (gồm cả test suite voices/speech) đều **PASS 100%**.
    - Build frontend thành công sạch sẽ với `npm run build` (`tsc -b && vite build`, 0 errors).
    - Browser Subagent đã thực thi kiểm chứng E2E trên `http://127.0.0.1:18619/accounts`: kiểm tra bảng Accounts, modal Import (4/4 mặc định, bỏ chọn hết báo lỗi & khóa nút Save), modal Edit (bật/tắt, lưu thành công cập nhật bảng, reload trang vẫn giữ đúng trạng thái), và kiểm tra responsive mobile (390x844). 0 lỗi console, 0 request mạng lỗi.
+
 - **Blockers:** Không có
 
 ## Ghi chú chuẩn bị

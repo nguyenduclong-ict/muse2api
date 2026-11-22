@@ -70,26 +70,27 @@ sequenceDiagram
 
 ## 3. Xử Lý Sự Kiện Tương Tác Giao Diện (UI Event Handlers)
 
-| Khu vực | Phần tử UI | Sự kiện | API Endpoint | Tham số / Hành vi |
-|---|---|---|---|---|
-| **Chung** | Mount `PlaygroundPage` | `useQuery` | `GET /admin/apikey`, `GET /v1/models` | Lấy `raw_key` làm Bearer token cho các request `/v1/*`; nạp danh sách model. |
-| **Chat** | `Send` | `onSubmit` | `POST /v1/chat/completions` hoặc `POST /v1/responses` | `{model, messages/input, instructions, stream}`; đọc SSE stream bằng `fetch` + `ReadableStream` khi `stream=true`. |
-| **Chat** | `Stop` | `onClick` | *(Client-side)* | Gọi `AbortController.abort()` để dừng stream đang chạy. |
-| **Chat** | `Clear Chat` | `onClick` | *(Client-side)* | Xóa danh sách tin nhắn trong state React. |
-| **Images** | `Generate Image` (Mode `Generations`) | `onSubmit` | `POST /v1/images/generations` | `{model:"muse-image", prompt, size, response_format, async, image?}`; nếu `async=true` poll `GET /v1/images/tasks/{id}`. |
-| **Images** | `Generate Image` (Mode `Edits`) | `onSubmit` | `POST /v1/images/edits` | Gửi `multipart/form-data` (nếu upload file) hoặc JSON (nếu dán URL) kèm `prompt`, `size`, `response_format`, `async`. |
-| **Video** | `Generate Video` | `onSubmit` | `POST /v1/videos` → `GET /v1/videos/{id}` | `{model:"muse-video", prompt, duration, size, image?}`; tự động poll mỗi 2s đến khi `completed` hoặc `failed`. |
-| **Audio** | Filter / Search / Pagination | `onChange` | `GET /v1/audio/voices` | Query params `language`, `gender`, `tone`, `q`; lọc `cached only` ở client. |
-| **Audio** | `Play` (dòng giọng) | `onClick` | `GET /v1/audio/voices/{voice_id}/preview` | Gọi `fetch` với Bearer token, tạo `URL.createObjectURL(blob)` phát trực tiếp và cập nhật trạng thái `cached=true` trong cache query. |
-| **Audio** | `Regen` (dòng giọng) | `onClick` | `GET /v1/audio/voices/{voice_id}/preview?refresh=true` | Sinh lại file preview mới, phát lại và cập nhật stats. |
-| **Audio** | `Use` (dòng giọng) | `onClick` | *(Client-side)* | Gán `voice_id` vào trường `Selected Voice` của form `POST /v1/audio/speech`. |
-| **Audio** | `Clear Preview Cache` | `onClick` | `DELETE /admin/voices/preview` | Xác nhận modal/confirm, xóa toàn bộ file cache, invalidate query voices & stats. |
-| **Audio** | `Generate Speech` | `onSubmit` | `POST /v1/audio/speech` | `{model, input, voice, instructions?, speed?, response_format}`; nếu `mp3` nhận Blob phát trên `<audio>`, nếu `url` phát từ `data.url`. |
-| **Chung** | `Copy cURL` | `onClick` | *(Client-side)* | Sao chép lệnh `curl` tương ứng với state hiện tại vào clipboard. |
+| Khu vực    | Phần tử UI                            | Sự kiện    | API Endpoint                                           | Tham số / Hành vi                                                                                                                       |
+| ---------- | ------------------------------------- | ---------- | ------------------------------------------------------ | --------------------------------------------------------------------------------------------------------------------------------------- |
+| **Chung**  | Mount `PlaygroundPage`                | `useQuery` | `GET /admin/apikey`, `GET /v1/models`                  | Lấy `raw_key` làm Bearer token cho các request `/v1/*`; nạp danh sách model.                                                            |
+| **Chat**   | `Send`                                | `onSubmit` | `POST /v1/chat/completions` hoặc `POST /v1/responses`  | `{model, messages/input, instructions, stream}`; đọc SSE stream bằng `fetch` + `ReadableStream` khi `stream=true`.                      |
+| **Chat**   | `Stop`                                | `onClick`  | _(Client-side)_                                        | Gọi `AbortController.abort()` để dừng stream đang chạy.                                                                                 |
+| **Chat**   | `Clear Chat`                          | `onClick`  | _(Client-side)_                                        | Xóa danh sách tin nhắn trong state React.                                                                                               |
+| **Images** | `Generate Image` (Mode `Generations`) | `onSubmit` | `POST /v1/images/generations`                          | `{model:"muse-image", prompt, size, response_format, async, image?}`; nếu `async=true` poll `GET /v1/images/tasks/{id}`.                |
+| **Images** | `Generate Image` (Mode `Edits`)       | `onSubmit` | `POST /v1/images/edits`                                | Gửi `multipart/form-data` (nếu upload file) hoặc JSON (nếu dán URL) kèm `prompt`, `size`, `response_format`, `async`.                   |
+| **Video**  | `Generate Video`                      | `onSubmit` | `POST /v1/videos` → `GET /v1/videos/{id}`              | `{model:"muse-video", prompt, duration, size, image?}`; tự động poll mỗi 2s đến khi `completed` hoặc `failed`.                          |
+| **Audio**  | Filter / Search / Pagination          | `onChange` | `GET /v1/audio/voices`                                 | Query params `language`, `gender`, `tone`, `q`; lọc `cached only` ở client.                                                             |
+| **Audio**  | `Play` (dòng giọng)                   | `onClick`  | `GET /v1/audio/voices/{voice_id}/preview`              | Gọi `fetch` với Bearer token, tạo `URL.createObjectURL(blob)` phát trực tiếp và cập nhật trạng thái `cached=true` trong cache query.    |
+| **Audio**  | `Regen` (dòng giọng)                  | `onClick`  | `GET /v1/audio/voices/{voice_id}/preview?refresh=true` | Sinh lại file preview mới, phát lại và cập nhật stats.                                                                                  |
+| **Audio**  | `Use` (dòng giọng)                    | `onClick`  | _(Client-side)_                                        | Gán `voice_id` vào trường `Selected Voice` của form `POST /v1/audio/speech`.                                                            |
+| **Audio**  | `Clear Preview Cache`                 | `onClick`  | `DELETE /admin/voices/preview`                         | Xác nhận modal/confirm, xóa toàn bộ file cache, invalidate query voices & stats.                                                        |
+| **Audio**  | `Generate Speech`                     | `onSubmit` | `POST /v1/audio/speech`                                | `{model, input, voice, instructions?, speed?, response_format}`; nếu `mp3` nhận Blob phát trên `<audio>`, nếu `url` phát từ `data.url`. |
+| **Chung**  | `Copy cURL`                           | `onClick`  | _(Client-side)_                                        | Sao chép lệnh `curl` tương ứng với state hiện tại vào clipboard.                                                                        |
 
 ## 4. Thuật toán & Quy tắc xử lý Voice Preview Cache
 
 ### 4.1. Chuẩn hóa tên file cache
+
 ```python
 import re
 
@@ -97,11 +98,14 @@ def safe_preview_filename(voice_id: str) -> str:
     safe = re.sub(r"[^a-zA-Z0-9_-]+", "__", voice_id.strip())
     return f"{safe}.mp3"
 ```
+
 - Ví dụ: `avocado_v2:MAI_01` → `avocado_v2__MAI_01.mp3`.
 - Luôn dùng `os.path.basename()` khi phục vụ file tại `GET /v1/voice-previews/{filename}` để chống path traversal.
 
 ### 4.2. Bảng câu mẫu cố định theo nhóm ngôn ngữ
+
 Mỗi giọng được xác định nhóm ngôn ngữ qua `get_voice_language_group(voice_info)` và ánh xạ sang câu mẫu cố định (ngắn 2–4 giây):
+
 - `Vietnamese`: `"Xin chào, đây là bản nghe thử giọng đọc để bạn kiểm tra chất lượng âm thanh."`
 - `Japanese`: `"こんにちは、こちらは音声の品質を確認するためのサンプルボイスです。"`
 - `Korean`: `"안녕하세요, 음성 품질을 확인하기 위한 샘플 미리듣기입니다."`
@@ -119,6 +123,7 @@ Mỗi giọng được xác định nhóm ngôn ngữ qua `get_voice_language_gr
   `"Hello! This is a quick voice preview so you can hear how I sound."`
 
 ### 4.3. Đồng bộ hóa In-Flight & Ghi nguyên tử
+
 1. `VoicePreviewService` giữ một registry khóa theo `voice_id`: `_locks: dict[str, threading.Lock]` được bảo vệ bởi `_locks_guard = threading.Lock()`.
 2. Khi có yêu cầu cho `voice_id`:
    - Nếu `not refresh` và file `<voice_preview_dir>/<safe>.mp3` tồn tại với `size > 0` → trả ngay (`cached=True`).
@@ -130,6 +135,7 @@ Mỗi giọng được xác định nhóm ngôn ngữ qua `get_voice_language_gr
    - Cập nhật bản ghi `tasks` đã tạo (`status="completed"`, `media_filename=filename`, `account_id`, `session_id`, `latency_ms`).
 
 ## 5. Thông số kỹ thuật Backend
+
 - **Config (`packages/backend/config.py`):**
   - Thêm property `voice_preview_dir` trỏ tới `os.path.join(self.data_dir, "voice_previews")`.
   - Tạo sẵn thư mục này khi khởi tạo app trong `main.py` (tương tự `cfg.media_dir`).

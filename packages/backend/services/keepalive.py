@@ -55,7 +55,7 @@ class KeepAliveService:
         for acc in self.db.list_accounts():
             if self._stop.is_set():
                 break
-            if not acc["enabled"]:
+            if not acc["enabled"] or acc.get("status") == "resetting":
                 continue
             last_ka = float(acc.get("last_keepalive_at") or 0.0)
             if now - last_ka >= interval_s:
@@ -66,6 +66,14 @@ class KeepAliveService:
         acc = self.db.get_account(account_id)
         if not acc:
             return {"ok": False, "error": "Account not found"}
+        if acc.get("status") == "resetting":
+            return {
+                "ok": False,
+                "account_id": account_id,
+                "status": "resetting",
+                "skipped": True,
+                "error": "Account is currently resetting",
+            }
         cookies = json.loads(acc["cookies_json"])
         proxy_url = acc.get("effective_proxy_url") or ""
         try:

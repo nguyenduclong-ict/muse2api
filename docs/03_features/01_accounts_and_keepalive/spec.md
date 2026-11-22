@@ -4,27 +4,31 @@
 - **Liên quan:** [System Architecture](../../02_basic_design/00_system_architecture.md), [ERD](../../02_basic_design/02_database/erd.md)
 
 ## 1. Mục tiêu & Bối cảnh
+
 Quản lý vòng đời tài khoản `muse.ai` không cần trình duyệt: import từ cookie, theo dõi trạng thái/quota, bật/tắt tham gia pool, gắn proxy riêng và duy trì phiên sống tự động qua Keep-Alive.
 
 ## 2. Phạm vi
-- **In Scope:** Import cookie (header string hoặc JSON), chỉnh sửa label/proxy/enabled/model hỗ trợ (`chat`, `image`, `video`, `speech`), test kết nối WSS (`Noise_XX` + `GET /health`), kiểm tra quota, chạy Keep-Alive nền (20 phút/lần) và thủ công.
+
+- **In Scope:** Import cookie (header string hoặc JSON), chỉnh sửa label/proxy/enabled/model hỗ trợ (`chat`, `image`, `video`, `speech`), cờ `auto_reset` theo tài khoản, test kết nối WSS (`Noise_XX` + `GET /health`), kiểm tra quota, chạy Keep-Alive nền (20 phút/lần) và thủ công, đặt lại Muse thủ công (`POST /api/hatch/replace-vm`), đếm request phát sinh (`requests_since_reset`), lịch sử `reset_logs` và Auto-Reset chạy nền.
 - **Out of Scope:** Đăng nhập bằng email/password hoặc giải OTP/CAPTCHA tự động.
 
 ## 3. Yêu cầu chức năng (`FR`)
-- **FR-001 (Import Cookie):** Cho phép nhập `label`, chuỗi `Cookie:` header hoặc JSON array/dict, `proxy_id` (tùy chọn) và `supported_models` (tùy chọn, mặc định đủ 4 loại `["chat", "image", "video", "speech"]`). Hệ thống parse cookie, xác nhận có ít nhất cookie phiên (`hatch_sess` hoặc `hatch_vml`), lưu vào bảng `accounts`.
+
+- **FR-001 (Import Cookie):** Cho phép nhập `label`, chuỗi `Cookie:` header hoặc JSON array/dict, `proxy_id` (tùy chọn), `supported_models` (tùy chọn, mặc định đủ 4 loại `["chat", "image", "video", "speech"]`) và `auto_reset` (tùy chọn, mặc định `false`). Hệ thống parse cookie, xác nhận có ít nhất cookie phiên (`hatch_sess` hoặc `hatch_vml`), lưu vào bảng `accounts`.
 - **FR-002 (Bật/Tắt & Xóa tài khoản):** Admin có thể toggle `enabled` hoặc xóa tài khoản khỏi pool; tài khoản `enabled=false` bị loại khỏi điều phối `/v1/*` và đóng kết nối WSS đang giữ.
 - **FR-003 (Test WSS Connection):** Nút **Test WSS** thực hiện HTTP Bootstrap (`GET /thread/new`) + `Noise_XX` handshake + `GET /health`, cập nhật `status = healthy` nếu `200 OK` hoặc `expired`/`error` kèm thông báo lỗi.
 - **FR-004 (Quota Check):** Gọi Next.js Server Action (`POST https://muse.ai/thread/new` với `next-action` và `[{"includeAgreement":true}]`) để lấy thông số quota thực tế (`plan`, `weekly_pct`, `weekly_reset`, `extra_pct`, `extra_remaining`) lưu vào `quota_json` và hiển thị bằng 2 thanh progress pill (% còn lại).
 - **FR-005 (Gắn Proxy từ danh sách Proxies & hiển thị cột Proxy):** Cho phép chọn `proxy_id` từ danh sách proxy đã lưu ở [Proxy Management](../05_proxy_management/spec.md) (hoặc để trống `No proxy`) khi import hoặc edit tài khoản; **không cho nhập raw proxy URL hoặc chọn `<select>` trực tiếp trên bảng Account**. Cột `Proxy` trên bảng hiển thị `No proxy` khi chưa gắn, hoặc hiển thị `proxy_ip` (nếu đã check IP) / `proxy_masked` khi đã gắn.
 - **FR-006 (Keep-Alive chạy ngầm & cập nhật Status):** Scheduler chạy nền định kỳ mỗi `20 phút` cho các tài khoản `enabled=true`, gọi `GET /api/session` và `POST /api/hatch/vm/wake` (nếu VM ngủ), tự động cập nhật `status` (`healthy`, `expired`, hoặc `cooldown` khi lỗi mạng/proxy), `last_keepalive_at`, `last_error`, và ghi kết quả vào `keepalive_logs`. Hỗ trợ kích hoạt thủ công cho 1 tài khoản hoặc toàn bộ pool.
 - **FR-007 (Auto-Polling Quota & Refresh All):** Frontend tự động polling `POST /admin/accounts/quota` mỗi `5 phút` và cung cấp nút **Refresh All** ở cả Overview và Accounts (mọi nút gọi API đều hiển thị spinner loading mà không làm thay đổi kích thước nút, thông báo qua custom Toast).
-- **FR-008 (Export Accounts):** Cho phép xuất danh sách tài khoản (`cookies`, `cookie_header`, `proxy_id`, `proxy_url`, `enabled`, `supported_models`, `status`, `quota`) thành tệp `muse2apiv2-accounts.json` qua `GET /admin/accounts/export`.
-- **FR-009 (Chrome Extension Copy & Import Cookie):** Dự án cung cấp thư mục `extension/` (Manifest V3) với 2 chức năng:
+- **FR-008 (Export Accounts):** Cho phép xuất danh sách tài khoản (`cookies`, `cookie_header`, `proxy_id`, `proxy_url`, `enabled`, `supported_models`, `auto_reset`, `status`, `quota`) thành tệp `muse2apiv2-accounts.json` qua `GET /admin/accounts/export`.
+- **FR-009 (Chrome Extension Copy, Import Cookie & Clear Site Data):** Dự án cung cấp thư mục `extension/` (Manifest V3) với 3 chức năng:
   1. **Copy Cookie:** Đọc toàn bộ cookie của `muse.ai` (kể cả `HttpOnly`) và copy thành chuỗi `Cookie:` header.
   2. **Import Cookie:** Cho phép dán chuỗi `Cookie:` header hoặc JSON (`{name: value}` / array) để ghi đè/nạp cookie vào trình duyệt cho `https://muse.ai` (xử lý chuẩn cả cookie `__Host-` và cookie thường), tùy chọn tải lại tab `muse.ai` đang mở.
-  Trên giao diện Accounts có nút **Download Extension** tải về gói `.zip` qua `GET /admin/extension/download`.
+  3. **Clear Site Data:** Có bước xác nhận trước khi xóa; xóa toàn bộ dữ liệu trang cho `muse.ai` (tương đương DevTools → Application → Storage → Clear site data: cookies trên các subdomain, `localStorage`, `sessionStorage`, `IndexedDB`, `Cache Storage`, HTTP cache, `File Systems` và `Service Workers`) và tự động reload các tab `muse.ai` đang mở sau khi xóa xong.
+     Trên giao diện Accounts có nút **Download Extension** tải về gói `.zip` qua `GET /admin/extension/download`.
 - **FR-012 (Copy Cookie từ Account):** Mỗi dòng tài khoản trên Console có nút **Copy Cookie** gọi `GET /admin/accounts/{id}/cookies` để lấy chuỗi `cookie_header` của tài khoản đó và copy vào clipboard (hiển thị Toast xác nhận), phục vụ dán nhanh vào Extension.
-- **FR-010 (Edit Account & Modal Edit):** Mỗi dòng tài khoản có nút **Edit** mở modal chỉnh sửa (`label`, `cookies_raw` tùy chọn — để trống giữ nguyên cookie cũ, `proxy_id` chọn từ danh sách Proxies hoặc `No proxy`, danh sách `supported_models`, và trạng thái `enabled`), lưu qua `PATCH /admin/accounts/{id}`.
+- **FR-010 (Edit Account & Modal Edit):** Mỗi dòng tài khoản có nút **Edit** mở modal chỉnh sửa (`label`, `cookies_raw` tùy chọn — để trống giữ nguyên cookie cũ, `proxy_id` chọn từ danh sách Proxies hoặc `No proxy`, danh sách `supported_models`, trạng thái `enabled`, công tắc `auto_reset`, kèm hiển thị chỉ xem `last_reset_at`, `last_reset_status`, `last_reset_error` và `requests_since_reset`), lưu qua `PATCH /admin/accounts/{id}`.
 - **FR-011 (Unified Refresh & Background WSS Tunnel Daemon):**
   - Bỏ nút **Quota** và nút **Test WSS** riêng lẻ trên từng dòng Account; thay bằng nút **Refresh** (`POST /admin/accounts/{id}/refresh`) thực hiện đồng bộ cả 3 bước: (1) kiểm tra trạng thái/session Keep-Alive, (2) kiểm tra & kết nối WSS Tunnel, (3) kiểm tra Quota; cập nhật `status`, `wss_connected`, `quota`, `last_keepalive_at`.
   - **WSS Tunnel chạy ngầm:** Backend duy trì vòng lặp nền tự động kết nối/giữ sống WSS Tunnel cho các tài khoản `enabled=true` (không `expired`, chưa hết quota), tự cập nhật `wss_connected` và `status` vào DB/pool để frontend hiển thị theo thời gian thực.
@@ -32,8 +36,18 @@ Quản lý vòng đời tài khoản `muse.ai` không cần trình duyệt: impo
   - Mỗi tài khoản lưu danh sách loại model hỗ trợ (`supported_models`) gồm tập con không rỗng của 4 loại: `"chat"`, `"image"`, `"video"`, `"speech"`.
   - Hỗ trợ truyền `supported_models` khi tạo mới (`POST /admin/accounts`, mặc định bật đủ cả 4 loại nếu không truyền) và cập nhật (`PATCH /admin/accounts/{id}`), trả về trong payload của `GET /admin/accounts`, `GET /admin/dashboard` và `GET /admin/accounts/export`.
   - Trên Console, modal **Import Account** và modal **Edit Account** cung cấp 4 toggle pill (`Chat`, `Image`, `Video`, `Speech`); bảng **Accounts** hiển thị các badge model đang bật ở dạng chỉ xem (chỉnh sửa thông qua modal **Edit**). Bảng tài khoản trên trang **Overview** giữ nguyên, không thêm cột mới.
+- **FR-014 (Manual Reset Muse):**
+  - Mỗi dòng tài khoản trên bảng **Accounts** có nút icon **Reset Muse** mở hộp thoại xác nhận (cảnh báo thao tác này sẽ xóa vĩnh viễn lịch sử chat, file và tác vụ đang chạy trên VM `muse.ai` của tài khoản).
+  - Khi xác nhận, gọi `POST /admin/accounts/{id}/reset`: kiểm tra tài khoản tồn tại và chưa ở trạng thái `resetting`, chuyển `status = "resetting"`, đẩy tác vụ reset vào worker chạy nền và trả ngay **`202 Accepted`** kèm bản ghi tài khoản đã serialize; giao diện **Accounts** và **Overview** tự động cập nhật trạng thái qua polling 5s (hiển thị badge `resetting`).
+  - Luồng xử lý nền: chờ drain các request `/v1/*` đang chạy (tối đa `30s`) → đóng kết nối WSS → kiểm tra `GET /api/session?vm_state=live` (`vm_type == "hatch_vm"`) → gọi `POST https://muse.ai/api/hatch/replace-vm` (`{"sourceEnvId": vm_id, "destinationType": "standard", "intent": "reset"}`) → đồng bộ `vm_selection.override` (best-effort qua `updateUserPreferencesAction`) → kết nối lại WSS (`Noise_XX` + `GET /health == 200`, tối đa `120s`) → cập nhật `status = "healthy"`, `last_reset_at = now`, `last_reset_status = "ok"`, `last_reset_error = ""`, đặt `requests_since_reset = 0` và ghi bản ghi vào `reset_logs`.
+- **FR-015 (Auto-Reset định kỳ theo tài khoản, Đếm Request & Lịch sử Reset):**
+  - Mỗi tài khoản lưu cờ `auto_reset` (mặc định `false` cho cả tài khoản cũ sau migrate và tài khoản mới import) và bộ đếm `requests_since_reset` (tăng `1` mỗi khi tài khoản được điều phối phục vụ request `/v1/*`, đặt về `0` khi reset thành công).
+  - `ResetService` chạy nền (kiểm tra mỗi `60s`), đọc cấu hình toàn cục `settings.auto_reset` (xem [Settings Spec](../04_settings_and_cleanup/spec.md), `FR-305`), thực thi tuần tự từng tài khoản một cho các tài khoản đủ điều kiện.
+  - Cung cấp `POST /admin/accounts/reset-due` để kích hoạt quét và chạy ngay các tài khoản đến hạn (dùng bởi nút **Run Due Resets Now** trên Settings) và `GET /admin/accounts/reset-logs?limit=30` để tra cứu lịch sử `reset_logs`.
+  - Bảng **Accounts** giữ nguyên số cột; hiển thị thêm tag gọn `Auto` cho tài khoản bật `auto_reset` và badge `resetting` ở cột `Status`.
 
 ## 4. Quy tắc nghiệp vụ (`BR`)
+
 - **BR-001:** Cookie và mật khẩu proxy không bao giờ được trả nguyên văn qua `GET /admin/accounts` hay ghi vào log; luôn mask khi hiển thị.
 - **BR-002:** Tài khoản có `status` là `expired` hoặc `disabled` không được chọn trong LRU pool; tài khoản `cooldown` được bỏ qua cho đến khi hết thời gian cooldown.
 - **BR-003:** Kết nối Keep-Alive thất bại với HTTP `401` phải chuyển `status` tài khoản sang `expired` ngay lập tức.
@@ -46,8 +60,22 @@ Quản lý vòng đời tài khoản `muse.ai` không cần trình duyệt: impo
   - Mỗi tài khoản **bắt buộc bật ít nhất 1 loại model**; nếu `supported_models` rỗng (`[]`) hoặc chứa giá trị ngoài tập hợp lệ, API trả `400 Bad Request` và giao diện chặn lưu kèm thông báo nhắc chọn tối thiểu 1 loại.
   - Các tài khoản đã tồn tại trước khi nâng cấp DB (hoặc khi cột `supported_models_json` rỗng/NULL) mặc định được coi là hỗ trợ đủ cả 4 loại `["chat", "image", "video", "speech"]`.
   - Việc chỉ cập nhật `supported_models` trên `PATCH /admin/accounts/{id}` không đóng kết nối WSS đang mở và không ảnh hưởng tới lịch Keep-Alive; tài khoản chỉ bị loại khỏi danh sách ứng viên (`_candidate_accounts(capability)`) của những loại request không có trong `supported_models` (chi tiết định tuyến xem [OpenAI API Spec](../02_openai_api_and_keys/spec.md), `BR-111`).
+- **BR-006 (Giao thức Reset Muse & Giới hạn loại VM):**
+  - Chỉ áp dụng cho tài khoản có `vm_type == "hatch_vm"` (Standard VM); nếu `GET /api/session?vm_state=live` trả về `hatch_cvm` (Confidential VM yêu cầu PIN/WebCrypto recovery key), hệ thống từ chối thực hiện reset và ghi nhận lỗi rõ ràng.
+  - Bước nhập tên tác nhân trên web `muse.ai` chỉ là kiểm tra cục bộ phía client, không gửi lên máy chủ. Bước gọi `updateUserPreferencesAction` đồng bộ `vm_selection.override` chạy ở chế độ best-effort (lỗi ở bước này không làm hỏng quy trình reset nếu `GET /thread/new` và WSS `/health` đã trỏ sang `new_vm_id`).
+- **BR-007 (Kiểm soát đồng thời, Drain, Bảo vệ Pool & Crash Recovery):**
+  - Tài khoản có `status == "resetting"` tự động bị loại khỏi `_candidate_accounts()`, đồng thời bị bỏ qua bởi `WSSPool.maintain_tunnels()`, `KeepAliveService.run_due()`, và `_refresh_account_full()`.
+  - `WSSPool` duy trì bộ đếm request đang xử lý (`in_flight`) theo từng tài khoản: reset thủ công chờ drain các request đang chạy tối đa `30s` rồi mới đóng kết nối WSS; auto-reset **hoãn** nếu `in_flight > 0`.
+  - Auto-reset chỉ chạy tuần tự tối đa `1` tài khoản tại một thời điểm và **hoãn** nếu tổng số tài khoản `healthy` khả dụng (đang `enabled=true`, chưa hết quota) trong pool `<= 1` (tránh làm toàn bộ pool mất khả năng phục vụ `/v1/*`).
+  - Khi backend khởi động (`lifespan`), hệ thống tự động khôi phục mọi tài khoản bị treo ở `status == "resetting"` về `"unknown"` (tương tự cơ chế khôi phục task treo `fail_orphaned_tasks`).
+- **BR-008 (Điều kiện đến hạn Auto-Reset, Xử lý lỗi & Lịch sử `reset_logs`):**
+  - Một tài khoản chỉ được auto-reset khi thỏa mãn đồng thời toàn bộ các điều kiện: `settings.auto_reset.enabled == true`, `acc.enabled == true`, `acc.auto_reset == true`, `acc.status not in ("expired", "resetting")`, `not is_quota_exhausted(acc.quota_json)`, `acc.requests_since_reset > 0`, `in_flight == 0`, số tài khoản `healthy` khả dụng `>= 2`, `now - acc.last_reset_at >= interval_minutes * 60`, và không đang trong thời gian backoff lỗi `15 phút`.
+  - **Mốc tính lần đầu:** Khi tạo tài khoản mới với `auto_reset = true` hoặc bật `auto_reset` từ `false → true` trên tài khoản có `last_reset_at == 0`, hệ thống khởi tạo `last_reset_at = now` để chờ đủ 1 chu kỳ `interval_minutes` trước lần auto-reset đầu tiên.
+  - **Khi reset thất bại:** Giữ nguyên `requests_since_reset` và `last_reset_at` cũ, cập nhật `last_reset_status = "error"`, `last_reset_error`, chuyển `status` sang `"expired"` nếu lỗi HTTP `401` hoặc `"cooldown"` với các lỗi khác, ghi bản ghi vào `reset_logs` và áp dụng backoff `15 phút` trước khi auto-reset thử lại.
+  - Bảng `reset_logs` lưu tách biệt khỏi `keepalive_logs` và giữ tối đa `30` bản ghi gần nhất mỗi tài khoản.
 
 ## 5. Tiêu chí nghiệm thu (`AC`)
+
 - **AC-001:** Import cookie hợp lệ (như chuỗi từ `tmp/account1.txt`) lưu thành công vào SQLite và hiển thị cookie đã mask trên bảng Accounts.
 - **AC-002:** Bấm **Test WSS** trên tài khoản hợp lệ hoàn tất handshake `Noise_XX` và trả về `healthy` trong `< 10s`.
 - **AC-003:** Tắt `enabled` trên tài khoản đang mở WSS sẽ đóng socket của tài khoản đó và không nhận thêm request từ `/v1/*`.
@@ -62,3 +90,8 @@ Quản lý vòng đời tài khoản `muse.ai` không cần trình duyệt: impo
 - **AC-012:** Bấm **Copy Cookie** trên 1 tài khoản sao chép đúng chuỗi `cookie_header` vào clipboard; dán chuỗi đó vào ô **Import Cookies** trong Chrome Extension và bấm Import sẽ nạp đầy đủ cookie cho `https://muse.ai`.
 - **AC-013:** Tài khoản cũ sau khi migrate DB và tài khoản mới tạo không truyền `supported_models` đều có `supported_models = ["chat", "image", "video", "speech"]`. Gửi `POST /admin/accounts` hoặc `PATCH /admin/accounts/{id}` với `supported_models: []` hoặc giá trị lạ (vd `["audio"]`) trả `400 Bad Request`; gửi `["chat", "image", "speech"]` lưu đúng vào SQLite và trả đúng qua `GET /admin/accounts` & `GET /admin/accounts/export`.
 - **AC-014:** Trên giao diện **Accounts**, modal **Import Account** mặc định chọn đủ 4 pill (`Chat`, `Image`, `Video`, `Speech`), modal **Edit Account** cho phép bật/tắt từng loại và không cho lưu khi bỏ chọn cả 4; bảng Accounts hiển thị đúng các badge model đang bật của từng tài khoản ở dạng chỉ xem.
+- **AC-015:** DB cũ khi migrate và DB mới đều có đủ các cột trên bảng `accounts` (`auto_reset` mặc định `0`, `last_reset_at`, `last_reset_status`, `last_reset_error`, `requests_since_reset` mặc định `0`) và bảng `reset_logs`; khi server khởi động lại với tài khoản đang treo ở `status = "resetting"`, tài khoản tự động chuyển về `"unknown"`.
+- **AC-016:** Bấm **Reset Muse** và xác nhận gọi `POST /admin/accounts/{id}/reset` trả về `202 Accepted`, đặt `status = "resetting"`, chờ drain tối đa 30s nếu có request đang chạy, gọi `POST /api/hatch/replace-vm` + xác minh WSS `GET /health == 200`, chuyển `status = "healthy"`, đặt `requests_since_reset = 0`, cập nhật `last_reset_at` và ghi `reset_logs`; nếu tài khoản là `hatch_cvm` thì từ chối rõ lỗi; trong khi đang `resetting`, `maintain_tunnels()`, `KeepAliveService.run_due()` và `_candidate_accounts()` đều bỏ qua tài khoản này.
+- **AC-017:** Mỗi request `/v1/*` thành công hoặc đi qua tài khoản làm `requests_since_reset` tăng lên `1`; Auto-Reset chạy nền tự động **hoãn** khi `requests_since_reset == 0`, khi `in_flight > 0`, khi tài khoản hết quota/`expired`/`disabled`, hoặc khi số tài khoản `healthy` khả dụng `<= 1`; khi bật `auto_reset` lần đầu (`last_reset_at == 0`), `last_reset_at` được gán `now` và phải chờ đủ 1 chu kỳ `interval_minutes` mới chạy.
+- **AC-018:** Khi reset gặp lỗi HTTP `401` hoặc lỗi mạng/upstream, trạng thái tài khoản chuyển sang `expired`/`cooldown`, giữ nguyên `requests_since_reset`, ghi lịch sử vào `reset_logs` (tối đa 30 dòng/tài khoản, không bị `keepalive_logs` đẩy trôi) và không lặp lại trong vòng `15 phút` backoff.
+- **AC-019:** Trên giao diện **Accounts**, modal **Import** và **Edit** có công tắc `Auto Reset` (modal **Edit** hiển thị thêm `Last Reset` và `Requests since reset`), bảng **Accounts** có nút **Reset Muse** kèm hộp thoại xác nhận và tag `Auto`, badge `Resetting` hiển thị trên cả **Accounts** và **Overview**, và `GET /admin/accounts/export` bao gồm trường `auto_reset`.

@@ -4,9 +4,11 @@
 - **Liên quan:** [API Overview](../../02_basic_design/01_api_overview.md), [System Architecture](../../02_basic_design/00_system_architecture.md)
 
 ## 1. Mục tiêu & Bối cảnh
+
 Cung cấp đầu API chuẩn OpenAI (`/v1/*`) đầy đủ tính năng tương đương `../muse2api` cho các ứng dụng bên thứ 3 gọi trực tiếp qua WSS Noise tunnel, đồng thời cho phép xem/copy/xoay 1 API Key duy nhất lưu dạng raw trong SQLite.
 
 ## 2. Phạm vi
+
 - **In Scope:**
   - Endpoints: `/v1/models` (đầy đủ alias gồm cả TTS), `/v1/chat/completions` (SSE + non-stream, multimodal `image_url`, top-level `prompt`, `MUSE2API_TOOL_PROTOCOL`), `/v1/responses` (SSE + non-stream, `instructions`), `/v1/images/generations`, `/v1/images/edits` (multipart & JSON), `/v1/images/tasks` (+ `/{id}` & `Idempotency-Key`), `/v1/videos` & `/v1/videos/generations` (+ `/{id}`), `/v1/audio/voices`, `/v1/audio/speech`, `/v1/media/{name}`.
   - Quản lý 1 Client API Key (`m2a_...`) lưu raw trong bảng `api_keys`.
@@ -15,6 +17,7 @@ Cung cấp đầu API chuẩn OpenAI (`/v1/*`) đầy đủ tính năng tương 
   - Quản lý nhiều API Key phân quyền theo từng user/app.
 
 ## 3. Yêu cầu chức năng (`FR`)
+
 - **FR-101 (Xác thực `/v1/*`):** Mọi request tới `/v1/*` (trừ `/v1/media/{name}`) phải kiểm tra `Authorization: Bearer <key>` khớp `api_keys.raw_key`.
 - **FR-102 (Quản lý 1 API Key Raw):** Khởi tạo tự động 1 key `m2a_<random>` nếu bảng `api_keys` trống (hoặc lấy từ `MUSE2API_KEY` trong `.env`). API `GET /admin/apikey` trả về `raw_key` nguyên văn để Admin xem/copy; `POST /admin/apikey/rotate` tạo key mới thay thế ngay lập tức.
 - **FR-103 (Chat Completions qua WSS):** Gửi `POST /chat/stream` và subscribe `POST /chat/subscribe` để nhận delta text theo thời gian thực, chuyển đổi thành SSE `chat.completion.chunk` (hoặc JSON sync). Hỗ trợ `messages` kèm `image_url`, top-level `prompt` khi `messages` rỗng, và tùy chọn `MUSE2API_TOOL_PROTOCOL` (`0` mặc định) cho `tools`/`tool_calls`.
@@ -29,6 +32,7 @@ Cung cấp đầu API chuẩn OpenAI (`/v1/*`) đầy đủ tính năng tương 
 - **FR-112 (`POST /v1/audio/speech` Sinh Giọng Nói TTS qua WSS):** Nhận JSON body chuẩn OpenAI mở rộng (`model` mặc định `"muse-tts"`, `input` bắt buộc, `voice` tùy chọn mặc định `"avocado_v2:MAI_01"`, `instructions` tùy chọn — giữ tương thích API nhưng bỏ qua ở Fast Path, `speed` tùy chọn, `response_format` mặc định `"mp3"` — hỗ trợ `"mp3"`, `"wav"`, `"url"`, `"json"`, `timeout` tùy chọn mặc định `180`s). Sau khi phân giải `voice`, kiểm tra ràng buộc `settings.voice_languages` (`BR-110`). Backend tự tiền xử lý bracket tags trong `input` (`BR-107`, `BR-108`), sinh tên file đầu ra duy nhất `tts-<task_id>.<ext>`, tạo Fast Prompt chạy trực tiếp `/opt/hatch/bin/tts speak ... --output ~/workspace/your_files/tts-<task_id>.<ext> --text-stdin` (không đọc skill, không normalize trên Muse VM), tải file audio từ `/media/raw/<path>` trong `/chat/history` (hoặc fallback tải trực tiếp `/media/raw/workspace/your_files/<filename>` / `/media/raw/your_files/<filename>` nếu `/chat/history` chưa trả `resources[]`) về `data/media/`. Sau khi tải về, backend áp dụng pipeline hậu xử lý audio cục bộ cho **tất cả** 4 chế độ trả về (`mp3`, `wav`, `url`, `json` — với `url`/`json` chuẩn hóa về `.mp3`): kiểm tra định dạng thực tế theo magic bytes / header WAV PCM16, gộp convert (nếu sai định dạng) và chuẩn hóa âm lượng (`-16 LUFS`, true peak `-1.5 dB`, `LRA=11`) bằng `ffmpeg` 2-pass `loudnorm` khi `MUSE2API_AUDIO_NORMALIZE=1`, đồng thời ghi nhận task `type="audio"` vào SQLite với đúng `media_filename` cuối cùng. Trả binary `audio/mpeg` khi `response_format="mp3"` hoặc `audio/wav` (16-bit PCM) khi `response_format="wav"` kèm các header `X-Muse-Media-Url`, `X-Audio-Converted: 0|1`, `X-Audio-Normalized: 0|1`; hoặc trả JSON `{ created, model, voice, voice_name, url, kind: "audio", bytes }` khi `response_format` là `"url"` hoặc `"json"`.
 
 ## 4. Quy tắc nghiệp vụ (`BR`)
+
 - **BR-101:** Khi Global System Prompt đang bật trong `settings`, backend tự động chèn `<system>...</system>` vào đầu nội dung prompt gửi lên `muse.ai` (ngoại trừ yêu cầu TTS tại `POST /v1/audio/speech`, xem `BR-107`).
 - **BR-102:** `POST /chat/subscribe` chỉ được gọi **sau khi** `POST /chat/stream` trả `200 OK` và xác nhận `session_id` tồn tại trên VM.
 - **BR-103:** Khi xoay API key (`rotate`), key cũ mất hiệu lực ngay lập tức đối với các request mới tới `/v1/*`.
@@ -66,6 +70,7 @@ Cung cấp đầu API chuẩn OpenAI (`/v1/*`) đầy đủ tính năng tương 
     3. Không có tài khoản khỏe mạnh khả dụng cho loại model đó (vd: `"No healthy enabled accounts available for 'video'"`).
 
 ## 5. Tiêu chí nghiệm thu (`AC`)
+
 - **AC-101:** Request `/v1/chat/completions` thiếu hoặc sai `Authorization` trả về `401 Unauthorized` chuẩn OpenAI.
 - **AC-102:** `GET /admin/apikey` trả về đúng `raw_key` trong SQLite; sau khi bấm Rotate, key cũ bị từ chối và key mới hoạt động ngay.
 - **AC-103:** Gọi `POST /v1/videos` (kèm hoặc không kèm ảnh tham chiếu) và `GET /v1/videos/{task_id}` trả về `progress` và URL `.mp4` hợp lệ phục vụ tại `/v1/media/{filename}`.

@@ -4,11 +4,13 @@
 - **Liên quan:** [API Overview](../../02_basic_design/01_api_overview.md), [Screens Overview](../../02_basic_design/03_screens_overview.md), [OpenAI API & Keys](../02_openai_api_and_keys/spec.md), [Settings & Cleanup](../04_settings_and_cleanup/spec.md)
 
 ## 1. Mục tiêu & Bối cảnh
+
 Cung cấp một giao diện **Playground** (`/playground`) trực quan ngay trong Admin Console cho phép nhà phát triển và quản trị viên kiểm thử trực tiếp toàn bộ các endpoint `/v1/*` (Chat, Responses, Images, Video, Audio & Voices) bằng API Key hiện hành, kèm xem/sao chép mã lệnh `cURL` và phản hồi JSON thô.
 
 Đồng thời, vì danh mục giọng đọc tĩnh (`packages/backend/data/voices.json`) không có sẵn URL âm thanh mẫu từ Muse, hệ thống bổ sung một API chuyên biệt cho phép nghe thử giọng đọc (Voice Preview) có cơ chế cache đĩa bền vững để phát tức thì từ lần thứ hai trở đi mà không tiêu tốn lại quota Muse.
 
 ## 2. Phạm vi
+
 - **In Scope:**
   - Màn hình riêng `SCR-07: Playground` (`/playground`) trên Sidebar (ngôn ngữ giao diện Tiếng Anh đồng bộ toàn bộ Console).
   - 4 tab kiểm thử API trực quan: **Chat** (`chat/completions` & `responses`), **Images** (`images/generations` & `images/edits`), **Video** (`videos` + tự động poll `videos/{id}`), **Audio & Voices** (`audio/voices` + nghe thử có cache + `audio/speech`).
@@ -25,6 +27,7 @@ Cung cấp một giao diện **Playground** (`/playground`) trực quan ngay tro
 ## 3. Yêu cầu chức năng (`FR`)
 
 ### 3.1. API Nghe thử Giọng đọc có Cache (Voice Preview API)
+
 - **FR-501 (API Sample Voice `/v1/audio/voices/{voice_id}/preview`):**
   - Endpoint `GET /v1/audio/voices/{voice_id}/preview` yêu cầu header `Authorization: Bearer <api_key>`.
   - Tham số đường dẫn `voice_id` hỗ trợ ID đầy đủ (ví dụ `avocado_v2:MAI_01`), tên giọng không phân biệt hoa/thường (`Aria`), hoặc OpenAI alias (`alloy`, `echo`, ...).
@@ -45,6 +48,7 @@ Cung cấp một giao diện **Playground** (`/playground`) trực quan ngay tro
   - `DELETE /admin/voices/preview/{voice_id}`: xóa file cache của riêng một giọng.
 
 ### 3.2. Giao diện API Playground (`SCR-07`)
+
 - **FR-504 (Điều hướng & Tự động xác thực):**
   - Thêm mục **Playground** (`/playground`) vào Sidebar ngay dưới **API & Keys**.
   - Khi mở trang, Playground tự động lấy API Key hiện hành qua `GET /admin/apikey` và gắn `Authorization: Bearer <raw_key>` cho mọi yêu cầu gọi `/v1/*`.
@@ -69,6 +73,7 @@ Cung cấp một giao diện **Playground** (`/playground`) trực quan ngay tro
   - Mỗi tab có ngăn thu gọn/mở rộng hiển thị lệnh `cURL` tương ứng với cấu hình hiện tại (có nút Copy, hỗ trợ ẩn/hiện API Key) và phần `Raw Response` (status code, latency `ms`, response headers/JSON).
 
 ## 4. Quy tắc nghiệp vụ (`BR`)
+
 - **BR-501 (Tách biệt thư mục Cache Preview):** File nghe thử giọng đọc được lưu tại `data/voice_previews/` với tên tệp chuẩn hóa an toàn từ `voice_id` (thay thế mọi ký tự không phải `[a-zA-Z0-9_-]` thành `__`, ví dụ `avocado_v2:MAI_01` → `avocado_v2__MAI_01.mp3`). Thư mục này hoàn toàn độc lập với `data/media/` và **không** bị `CleanupService` tự động xóa.
 - **BR-502 (Câu mẫu cố định theo nhóm ngôn ngữ):** Mỗi nhóm ngôn ngữ trong `CANONICAL_LANGUAGE_GROUPS` có một câu mẫu ngắn (2–4 giây) cố định trong backend (ví dụ: `Vietnamese`, `Japanese`, `Korean`, `French`, `Spanish`, `German`, `Chinese`, `Russian`, `Italian`, `Thai`, `Indonesian`, `Portuguese`, `Arabic`, `Indian`, `Finnish`, `Filipino`, `Malaysian`, và mặc định `English` cho toàn bộ 13 nhóm `English (*)` và `Other`).
 - **BR-503 (Chống gọi trùng In-Flight):** Khi nhiều yêu cầu cùng gọi `GET /v1/audio/voices/{voice_id}/preview` cho cùng một `voice_id` chưa có cache tại cùng thời điểm, chỉ một luồng duy nhất gọi Muse TTS; các yêu cầu còn lại chờ khóa theo `voice_id` và nhận lại file cache vừa sinh.
@@ -78,6 +83,7 @@ Cung cấp một giao diện **Playground** (`/playground`) trực quan ngay tro
 - **BR-507 (Fast Prompt & Chuẩn hóa Âm lượng Cục bộ cho Voice Preview):** Khi cache miss hoặc `refresh=true`, `VoicePreviewService` sử dụng chung Fast Prompt CLI (`/opt/hatch/bin/tts speak ... --output ~/workspace/your_files/tts-<task_id>.mp3 --text-stdin`, không đọc skill), cơ chế direct download fallback (`/media/raw/workspace/your_files/<filename>`) và pipeline `process_speech_audio(..., target_format="mp3")` (2-pass `loudnorm` tuân theo cấu hình `MUSE2API_AUDIO_NORMALIZE` cùng các ngưỡng `MUSE2API_AUDIO_TARGET_LUFS`, `MUSE2API_AUDIO_TRUE_PEAK`, `MUSE2API_AUDIO_LRA` và graceful fallback khi thiếu `ffmpeg`, xem [OpenAI API Spec](../02_openai_api_and_keys/spec.md) `BR-107`) trước khi ghi nguyên tử vào `data/voice_previews/`.
 
 ## 5. Tiêu chí nghiệm thu (`AC`)
+
 - **AC-501:** Gọi `GET /v1/audio/voices/avocado_v2:MAI_01/preview` lần đầu với API Key hợp lệ trả `200`, `Content-Type: audio/mpeg`, header `X-Voice-Preview-Cache: MISS`, tạo file `data/voice_previews/avocado_v2__MAI_01.mp3` và ghi 1 bản ghi vào bảng `tasks`.
 - **AC-502:** Gọi lại `GET /v1/audio/voices/avocado_v2:MAI_01/preview` lần thứ hai trả `200`, header `X-Voice-Preview-Cache: HIT`, không gọi Muse WSS và không tạo thêm bản ghi trong bảng `tasks`.
 - **AC-503:** Gọi `GET /v1/audio/voices/avocado_v2:MAI_01/preview?response_format=url` trả JSON chứa `cached: true`, `url` trỏ tới `/v1/voice-previews/avocado_v2__MAI_01.mp3` và tải được file `.mp3` từ URL đó.

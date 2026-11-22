@@ -2,6 +2,7 @@
 
 ::: columns-2
 ::: column Sidebar {span-1}
+
 - Overview
 - Accounts
 - Proxies
@@ -9,10 +10,12 @@
 - **Playground**
 - Tasks & Media
 - Settings
-:::
+  :::
 
 ::: column Main Content {span-4}
+
 # API Playground
+
 Test `/v1/*` OpenAI-compatible endpoints live and preview cached TTS voices.
 
 ::: tabs
@@ -21,6 +24,7 @@ Test `/v1/*` OpenAI-compatible endpoints live and preview cached TTS voices.
 ::: column Controls {span-1}
 ::: card Request Settings
 Endpoint
+
 - (*) Chat Completions (`/v1/chat/completions`)
 - ( ) Responses (`/v1/responses`)
 
@@ -46,6 +50,7 @@ Reference Image (optional)
 **Assistant:** WebSocket keep-alive periodically sends lightweight ping frames so idle connections are not dropped by NATs or proxies. It also detects broken peers early so the client can reconnect cleanly.
 
 ---
+
 [Type your message...___]{rows:2}
 ::: row {right}
 [Stop]{danger} [Send]{primary}
@@ -67,6 +72,7 @@ Reference Image (optional)
 ::: column Controls {span-1}
 ::: card Image Parameters
 Mode
+
 - (*) Generations (`/v1/images/generations`)
 - ( ) Edits (`/v1/images/edits`)
 
@@ -158,11 +164,11 @@ Task `vid_a1b2c3` ((completed · 100%)){success}
 [Search voice name, ID, tone...___] [All Languages v] [Gender v]
 :::
 
-| Voice | Group / Accent | Actions |
-|---|---|---|
-| **Aria** (`avocado_v2:MAI_01`) | English (US) · F, American, Warm | [Preview]{primary} [Use]{outline} |
-| **Linh** (`avocado_v2:vn_01`) | Vietnamese · F, Vietnamese, Natural | [Preview]{outline} [Use]{outline} |
-| **Magnus** (`avocado_v2:magnus`) | English (UK) · M, British, Deep | [Preview]{primary} [Use]{outline} |
+| Voice                            | Group / Accent                      | Actions                           |
+| -------------------------------- | ----------------------------------- | --------------------------------- |
+| **Aria** (`avocado_v2:MAI_01`)   | English (US) · F, American, Warm    | [Preview]{primary} [Use]{outline} |
+| **Linh** (`avocado_v2:vn_01`)    | Vietnamese · F, Vietnamese, Natural | [Preview]{outline} [Use]{outline} |
+| **Magnus** (`avocado_v2:magnus`) | English (UK) · M, British, Deep     | [Preview]{primary} [Use]{outline} |
 
 ::: row {right}
 [Prev]{outline} Page 1 / 122 [Next]{outline}
@@ -198,6 +204,7 @@ Quick Emotion Cues
 :::
 
 ---
+
 Now Playing: **Aria** ((245 KB · 3.1s)){success}
 [ Audio Player Controls ]
 ::: row {right}

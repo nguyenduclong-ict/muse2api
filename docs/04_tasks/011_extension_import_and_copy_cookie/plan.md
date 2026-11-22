@@ -4,6 +4,7 @@
 - **Liên kết Spec:** [01_accounts_and_keepalive](../../03_features/01_accounts_and_keepalive/spec.md), [design.md](../../03_features/01_accounts_and_keepalive/design.md)
 
 ## Kế hoạch thực hiện
+
 1. **Backend (`packages/backend/routers/accounts.py`):**
    - Thêm endpoint `GET /admin/accounts/{account_id}/cookies`: trả về `{ id, label, cookie_header, cookies }` (dùng `cookies_to_header`).
 2. **Frontend (`packages/frontend/src/pages/AccountsPage.tsx`):**

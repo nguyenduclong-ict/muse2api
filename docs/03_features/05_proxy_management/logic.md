@@ -30,14 +30,15 @@ sequenceDiagram
 
 ## 2. UI Event Handlers
 
-| Phần tử UI | Sự kiện | API Endpoint | Tham số |
-|---|---|---|---|
-| `+ Import Proxies` → `Import` | `onSubmit` | `POST /admin/proxies/import` | `{proxies_text}` |
-| `Check` (row) | `onClick` | `POST /admin/proxies/{id}/check` | `proxy_id` |
-| `Check All` | `onClick` | `POST /admin/proxies/check-all` | `{}` |
-| `Delete` (row) | `onClick` | `DELETE /admin/proxies/{id}` | `proxy_id` |
+| Phần tử UI                    | Sự kiện    | API Endpoint                     | Tham số          |
+| ----------------------------- | ---------- | -------------------------------- | ---------------- |
+| `+ Import Proxies` → `Import` | `onSubmit` | `POST /admin/proxies/import`     | `{proxies_text}` |
+| `Check` (row)                 | `onClick`  | `POST /admin/proxies/{id}/check` | `proxy_id`       |
+| `Check All`                   | `onClick`  | `POST /admin/proxies/check-all`  | `{}`             |
+| `Delete` (row)                | `onClick`  | `DELETE /admin/proxies/{id}`     | `proxy_id`       |
 
 ## 3. Thuật toán Parse & Chuẩn hóa Proxy
+
 1. Với mỗi dòng sau khi `.strip()`: bỏ qua nếu rỗng hoặc bắt đầu bằng `#`.
 2. Nếu chứa `://`: parse bằng `urllib.parse.urlparse`, kiểm tra scheme thuộc `("http", "https", "socks5", "socks5h", "socks4")` và có `hostname` + `port`.
 3. Nếu không chứa `://`:

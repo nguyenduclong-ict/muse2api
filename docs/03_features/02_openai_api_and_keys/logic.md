@@ -54,13 +54,14 @@ sequenceDiagram
 
 ## 2. UI Event Handlers
 
-| Phần tử UI | Sự kiện | API Endpoint | Tham số |
-|---|---|---|---|
-| `Show / Hide` | `onClick` | - (client state) | Toggle mask/unmask `raw_key` |
-| `Copy Key` | `onClick` | - (clipboard) | Copy `raw_key` |
-| `Rotate Key` (confirm) | `onClick` | `POST /admin/apikey/rotate` | `{}` |
+| Phần tử UI             | Sự kiện   | API Endpoint                | Tham số                      |
+| ---------------------- | --------- | --------------------------- | ---------------------------- |
+| `Show / Hide`          | `onClick` | - (client state)            | Toggle mask/unmask `raw_key` |
+| `Copy Key`             | `onClick` | - (clipboard)               | Copy `raw_key`               |
+| `Rotate Key` (confirm) | `onClick` | `POST /admin/apikey/rotate` | `{}`                         |
 
 ## 3. Thuật toán xử lý bổ sung
+
 1. **SSRF Guard cho Reference URL (`BR-104`):**
    - Kiểm tra scheme chỉ cho phép `http`/`https` (hoặc local file nếu `MUSE2API_REF_IMAGE_LOCAL_FILES=1`).
    - Phân giải DNS (`socket.getaddrinfo`) và kiểm tra mọi IP không thuộc `is_private`, `is_loopback`, `is_link_local`, `is_reserved`, `is_multicast` (trừ khi `MUSE2API_REF_IMAGE_PRIVATE_FETCH=1`).
@@ -106,7 +107,7 @@ sequenceDiagram
        - Ngôn ngữ khác `"vi"`: `[laughs]` → `, haha,`; `[chuckles]`, `[giggles]` → `, heh,`; `[clears throat]` → `, hmm,`; `[sneezes]` → `Achoo!`.
        - Dùng chung mọi ngôn ngữ: `[sighs]` → `Haiz...`; `[gasps]` → `Huh!`; `[coughs]` → `Hm hm!`; `[pause]`, `[long pause]` → `...`.
        - Mọi `[tag]` khác (`[whispers]`, `[shouts]`, `[angry]`, `[sad]`, `[happy]`, `[excited]`, tag lạ): xóa bỏ hoàn toàn (`""`).
-     - Sau khi thay/xóa, dọn khoảng trắng ngang liên tiếp, tránh khoảng trắng trước dấu phẩy (` , `) hoặc dấu phẩy lặp (`,,` / dấu phẩy mở đầu câu sau khi xóa tag đầu dòng), nhưng giữ nguyên ngắt dòng giữa các đoạn văn.
+     - Sau khi thay/xóa, dọn khoảng trắng ngang liên tiếp, tránh khoảng trắng trước dấu phẩy (`,`) hoặc dấu phẩy lặp (`,,` / dấu phẩy mở đầu câu sau khi xóa tag đầu dòng), nhưng giữ nguyên ngắt dòng giữa các đoạn văn.
      - Nếu `preprocess_speech_text(...)` trả chuỗi rỗng sau trim (ví dụ `input="[whispers]"`), trả ngay `400 Bad Request` (`invalid_request_error`).
    - **Template Fast Prompt (`services/voice_preview.py::build_speech_prompt(..., output_filename: str | None = None)`):**
      - Tạo `task_id = f"aud_{secrets.token_hex(6)}"` trước khi dựng prompt; xác định `target_fmt = "wav" if fmt == "wav" else "mp3"` và tên file duy nhất `output_filename = f"tts-{task_id}.{target_fmt}"` (sanitize qua `os.path.basename` / chỉ cho phép `[a-zA-Z0-9._-]`, fallback sinh `tts-<hex>.<fmt>` nếu trống).
@@ -134,7 +135,7 @@ sequenceDiagram
        3. Nếu lượt kiểm tra `/chat/history` chưa thấy resource audio nào và `expected_output_filename` khác rỗng, thử tải trực tiếp lần lượt:
           - `GET /media/raw/workspace/your_files/{expected_output_filename}`
           - `GET /media/raw/your_files/{expected_output_filename}`
-          Nếu một trong hai trả `200 OK` với dữ liệu binary khác rỗng, lưu ngay vào `data/media/aud_<hex>.<ext>` mà không phải đợi retry hay báo lỗi `No audio resource produced`.
+            Nếu một trong hai trả `200 OK` với dữ liệu binary khác rỗng, lưu ngay vào `data/media/aud_<hex>.<ext>` mà không phải đợi retry hay báo lỗi `No audio resource produced`.
        4. Chỉ khi cả `/chat/history` lẫn direct fallback đều chưa có file mới `time.sleep(0.8)` rồi thử lại (tối đa 3 lượt).
    - **Pipeline hậu xử lý âm thanh cục bộ (`services/audio_format.py::process_speech_audio`):**
      - Signature: `process_speech_audio(file_path: str, target_format: str, *, normalize: bool = True, target_lufs: float = -16.0, true_peak: float = -1.5, lra: float = 11.0) -> tuple[str, bool, bool]` trả về `(final_path, was_converted, was_normalized)`.

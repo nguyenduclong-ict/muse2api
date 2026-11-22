@@ -116,14 +116,9 @@ function CurlInspector({
         <div className="flex items-center gap-2">
           {rawResponse && (
             <Badge
-              variant={
-                rawResponse.status >= 200 && rawResponse.status < 300
-                  ? "success"
-                  : "danger"
-              }
+              variant={rawResponse.status >= 200 && rawResponse.status < 300 ? "success" : "danger"}
             >
-              {rawResponse.status} {rawResponse.statusText} ·{" "}
-              {rawResponse.latencyMs}ms
+              {rawResponse.status} {rawResponse.statusText} · {rawResponse.latencyMs}ms
             </Badge>
           )}
         </div>
@@ -143,11 +138,7 @@ function CurlInspector({
                   onClick={() => setShowKey((v) => !v)}
                   className="h-6 px-2 text-[11px]"
                 >
-                  {showKey ? (
-                    <EyeOff className="h-3 w-3" />
-                  ) : (
-                    <Eye className="h-3 w-3" />
-                  )}
+                  {showKey ? <EyeOff className="h-3 w-3" /> : <Eye className="h-3 w-3" />}
                   {showKey ? "Hide Key" : "Show Key"}
                 </Button>
                 <Button
@@ -221,9 +212,7 @@ export function PlaygroundPage() {
   // -------------------------------------------------------------------------
   // TAB 1: CHAT STATE
   // -------------------------------------------------------------------------
-  const [chatMode, setChatMode] = useState<"chat_completions" | "responses">(
-    "chat_completions",
-  );
+  const [chatMode, setChatMode] = useState<"chat_completions" | "responses">("chat_completions");
   const [chatModel, setChatModel] = useState("muse-spark");
   const [chatStream, setChatStream] = useState(true);
   const [chatInstructions, setChatInstructions] = useState("");
@@ -236,14 +225,10 @@ export function PlaygroundPage() {
 
   const chatCurl = useMemo(() => {
     const ep =
-      chatMode === "chat_completions"
-        ? `${baseUrl}/chat/completions`
-        : `${baseUrl}/responses`;
+      chatMode === "chat_completions" ? `${baseUrl}/chat/completions` : `${baseUrl}/responses`;
     let bodyObj: any;
     if (chatMode === "chat_completions") {
-      const msgs = [
-        ...chatMessages.map((m) => ({ role: m.role, content: m.content })),
-      ];
+      const msgs = [...chatMessages.map((m) => ({ role: m.role, content: m.content }))];
       if (chatInput.trim()) {
         msgs.push({ role: "user", content: chatInput.trim() });
       }
@@ -257,16 +242,7 @@ export function PlaygroundPage() {
       };
     }
     return `curl -X POST "${ep}" \\\n  -H "Authorization: Bearer ${rawKey}" \\\n  -H "Content-Type: application/json" \\\n  -d '${JSON.stringify(bodyObj, null, 2)}'`;
-  }, [
-    baseUrl,
-    chatMode,
-    chatModel,
-    chatStream,
-    chatInstructions,
-    chatInput,
-    chatMessages,
-    rawKey,
-  ]);
+  }, [baseUrl, chatMode, chatModel, chatStream, chatInstructions, chatInput, chatMessages, rawKey]);
 
   const handleSendChat = async () => {
     if (!chatInput.trim() || !rawKey || chatStreaming) return;
@@ -292,10 +268,7 @@ export function PlaygroundPage() {
     setChatMessages(newMsgs);
 
     const assistantMsgId = `asst_${Date.now()}`;
-    setChatMessages((prev) => [
-      ...prev,
-      { id: assistantMsgId, role: "assistant", content: "" },
-    ]);
+    setChatMessages((prev) => [...prev, { id: assistantMsgId, role: "assistant", content: "" }]);
 
     const abortCtrl = new AbortController();
     chatAbortRef.current = abortCtrl;
@@ -304,9 +277,7 @@ export function PlaygroundPage() {
 
     try {
       const ep =
-        chatMode === "chat_completions"
-          ? `${baseUrl}/chat/completions`
-          : `${baseUrl}/responses`;
+        chatMode === "chat_completions" ? `${baseUrl}/chat/completions` : `${baseUrl}/responses`;
       let payload: any;
       if (chatMode === "chat_completions") {
         const sendMsgs = [];
@@ -352,11 +323,7 @@ export function PlaygroundPage() {
           body: errText,
         });
         setChatMessages((prev) =>
-          prev.map((m) =>
-            m.id === assistantMsgId
-              ? { ...m, content: `Error: ${errText}` }
-              : m,
-          ),
+          prev.map((m) => (m.id === assistantMsgId ? { ...m, content: `Error: ${errText}` } : m)),
         );
         return;
       }
@@ -376,12 +343,7 @@ export function PlaygroundPage() {
 
           for (const line of lines) {
             const trimmed = line.trim();
-            if (
-              !trimmed ||
-              trimmed.startsWith(":") ||
-              trimmed === "data: [DONE]"
-            )
-              continue;
+            if (!trimmed || trimmed.startsWith(":") || trimmed === "data: [DONE]") continue;
             if (trimmed.startsWith("data: ")) {
               try {
                 const parsed = JSON.parse(trimmed.slice(6));
@@ -389,19 +351,13 @@ export function PlaygroundPage() {
                 if (delta) {
                   accumulated += delta;
                   setChatMessages((prev) =>
-                    prev.map((m) =>
-                      m.id === assistantMsgId
-                        ? { ...m, content: accumulated }
-                        : m,
-                    ),
+                    prev.map((m) => (m.id === assistantMsgId ? { ...m, content: accumulated } : m)),
                   );
                 }
               } catch {
                 // partial json or response format
               }
-            } else if (
-              trimmed.startsWith("event: response.output_text.delta")
-            ) {
+            } else if (trimmed.startsWith("event: response.output_text.delta")) {
               // responses API stream
             }
           }
@@ -421,9 +377,7 @@ export function PlaygroundPage() {
           data.output?.[0]?.content?.[0]?.text ||
           JSON.stringify(data, null, 2);
         setChatMessages((prev) =>
-          prev.map((m) =>
-            m.id === assistantMsgId ? { ...m, content: fullContent } : m,
-          ),
+          prev.map((m) => (m.id === assistantMsgId ? { ...m, content: fullContent } : m)),
         );
         setChatRawResp({
           status: res.status,
@@ -438,9 +392,7 @@ export function PlaygroundPage() {
         toast.error(`Chat error: ${err.message}`);
         setChatMessages((prev) =>
           prev.map((m) =>
-            m.id === assistantMsgId
-              ? { ...m, content: `Error: ${err.message}` }
-              : m,
+            m.id === assistantMsgId ? { ...m, content: `Error: ${err.message}` } : m,
           ),
         );
       }
@@ -461,9 +413,7 @@ export function PlaygroundPage() {
   // -------------------------------------------------------------------------
   // TAB 2: IMAGES STATE
   // -------------------------------------------------------------------------
-  const [imgMode, setImgMode] = useState<"generations" | "edits">(
-    "generations",
-  );
+  const [imgMode, setImgMode] = useState<"generations" | "edits">("generations");
   const [imgPrompt, setImgPrompt] = useState("");
   const [imgSize, setImgSize] = useState("16:9");
   const [imgFormat, setImgFormat] = useState<"url" | "b64_json">("url");
@@ -476,9 +426,7 @@ export function PlaygroundPage() {
 
   const imgCurl = useMemo(() => {
     const ep =
-      imgMode === "generations"
-        ? `${baseUrl}/images/generations`
-        : `${baseUrl}/images/edits`;
+      imgMode === "generations" ? `${baseUrl}/images/generations` : `${baseUrl}/images/edits`;
     const payload: any = {
       model: "muse-image",
       prompt: imgPrompt || "Neon cybernetic shiba inu",
@@ -488,16 +436,7 @@ export function PlaygroundPage() {
     };
     if (imgRefUrl) payload.image = imgRefUrl;
     return `curl -X POST "${ep}" \\\n  -H "Authorization: Bearer ${rawKey}" \\\n  -H "Content-Type: application/json" \\\n  -d '${JSON.stringify(payload, null, 2)}'`;
-  }, [
-    baseUrl,
-    imgMode,
-    imgPrompt,
-    imgSize,
-    imgFormat,
-    imgAsync,
-    imgRefUrl,
-    rawKey,
-  ]);
+  }, [baseUrl, imgMode, imgPrompt, imgSize, imgFormat, imgAsync, imgRefUrl, rawKey]);
 
   const handleGenerateImage = async () => {
     if (!imgPrompt.trim() || !rawKey || imgLoading) return;
@@ -508,9 +447,7 @@ export function PlaygroundPage() {
 
     try {
       const ep =
-        imgMode === "generations"
-          ? `${baseUrl}/images/generations`
-          : `${baseUrl}/images/edits`;
+        imgMode === "generations" ? `${baseUrl}/images/generations` : `${baseUrl}/images/edits`;
       const payload: any = {
         model: "muse-image",
         prompt: imgPrompt.trim(),
@@ -545,11 +482,7 @@ export function PlaygroundPage() {
       });
 
       if (!res.ok) {
-        throw new Error(
-          data?.detail?.error?.message ||
-            data?.detail ||
-            "Image generation failed",
-        );
+        throw new Error(data?.detail?.error?.message || data?.detail || "Image generation failed");
       }
 
       if (imgAsync && data.id) {
@@ -652,11 +585,7 @@ export function PlaygroundPage() {
       });
 
       if (!res.ok) {
-        throw new Error(
-          data?.detail?.error?.message ||
-            data?.detail ||
-            "Video creation failed",
-        );
+        throw new Error(data?.detail?.error?.message || data?.detail || "Video creation failed");
       }
 
       const taskId = data.id;
@@ -705,14 +634,10 @@ export function PlaygroundPage() {
   const [speechSpeed, setSpeechSpeed] = useState("1.0");
   const [speechFormat, setSpeechFormat] = useState<"mp3" | "wav" | "url">("mp3");
   const [speechInstructions, setSpeechInstructions] = useState("");
-  const [speechInput, setSpeechInput] = useState(
-    "Hello world! [laughs] That is fantastic.",
-  );
+  const [speechInput, setSpeechInput] = useState("Hello world! [laughs] That is fantastic.");
   const [speechLoading, setSpeechLoading] = useState(false);
   const [speechAudioUrl, setSpeechAudioUrl] = useState<string | null>(null);
-  const [speechRawResp, setSpeechRawResp] = useState<RawResponseState | null>(
-    null,
-  );
+  const [speechRawResp, setSpeechRawResp] = useState<RawResponseState | null>(null);
 
   // Playing preview tracking
   const [playingVoiceId, setPlayingVoiceId] = useState<string | null>(null);
@@ -735,9 +660,7 @@ export function PlaygroundPage() {
   React.useEffect(() => {
     if (allVoices.length > 0) {
       const exists = allVoices.some(
-        (v) =>
-          v.id === selectedVoiceId ||
-          v.name.toLowerCase() === selectedVoiceId.toLowerCase(),
+        (v) => v.id === selectedVoiceId || v.name.toLowerCase() === selectedVoiceId.toLowerCase(),
       );
       if (!exists) {
         setSelectedVoiceId(allVoices[0].id);
@@ -747,9 +670,7 @@ export function PlaygroundPage() {
 
   const selectedVoiceObj = useMemo(() => {
     return allVoices.find(
-      (v) =>
-        v.id === selectedVoiceId ||
-        v.name.toLowerCase() === selectedVoiceId.toLowerCase(),
+      (v) => v.id === selectedVoiceId || v.name.toLowerCase() === selectedVoiceId.toLowerCase(),
     );
   }, [allVoices, selectedVoiceId]);
 
@@ -808,11 +729,7 @@ export function PlaygroundPage() {
       });
       if (!res.ok) {
         const errJson = await res.json().catch(() => ({}));
-        throw new Error(
-          errJson?.detail?.error?.message ||
-            errJson?.detail ||
-            "Preview failed",
-        );
+        throw new Error(errJson?.detail?.error?.message || errJson?.detail || "Preview failed");
       }
       const blob = await res.blob();
       const audioUrl = URL.createObjectURL(blob);
@@ -895,9 +812,7 @@ export function PlaygroundPage() {
           body: JSON.stringify(errJson, null, 2),
         });
         throw new Error(
-          errJson?.detail?.error?.message ||
-            errJson?.detail ||
-            "Speech generation failed",
+          errJson?.detail?.error?.message || errJson?.detail || "Speech generation failed",
         );
       }
 
@@ -942,13 +857,11 @@ export function PlaygroundPage() {
       {/* Page Header */}
       <div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
         <div>
-          <h1 className="text-2xl font-semibold tracking-tight text-white">
-            API Playground
-          </h1>
+          <h1 className="text-2xl font-semibold tracking-tight text-white">API Playground</h1>
           <p className="text-sm text-zinc-400">
             Live interactive playground for testing{" "}
-            <code className="text-zinc-300 font-mono">/v1/*</code> endpoints
-            with preview voice cache.
+            <code className="text-zinc-300 font-mono">/v1/*</code> endpoints with preview voice
+            cache.
           </p>
         </div>
 
@@ -958,9 +871,7 @@ export function PlaygroundPage() {
             type="button"
             onClick={() => setActiveTab("chat")}
             className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors cursor-pointer ${
-              activeTab === "chat"
-                ? "bg-zinc-800 text-white"
-                : "text-zinc-400 hover:text-zinc-200"
+              activeTab === "chat" ? "bg-zinc-800 text-white" : "text-zinc-400 hover:text-zinc-200"
             }`}
           >
             <MessageSquare className="h-3.5 w-3.5" />
@@ -982,9 +893,7 @@ export function PlaygroundPage() {
             type="button"
             onClick={() => setActiveTab("video")}
             className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors cursor-pointer ${
-              activeTab === "video"
-                ? "bg-zinc-800 text-white"
-                : "text-zinc-400 hover:text-zinc-200"
+              activeTab === "video" ? "bg-zinc-800 text-white" : "text-zinc-400 hover:text-zinc-200"
             }`}
           >
             <Film className="h-3.5 w-3.5" />
@@ -994,9 +903,7 @@ export function PlaygroundPage() {
             type="button"
             onClick={() => setActiveTab("audio")}
             className={`flex items-center gap-1.5 rounded-md px-3 py-1.5 text-xs font-medium transition-colors cursor-pointer ${
-              activeTab === "audio"
-                ? "bg-zinc-800 text-white"
-                : "text-zinc-400 hover:text-zinc-200"
+              activeTab === "audio" ? "bg-zinc-800 text-white" : "text-zinc-400 hover:text-zinc-200"
             }`}
           >
             <Headphones className="h-3.5 w-3.5" />
@@ -1049,9 +956,7 @@ export function PlaygroundPage() {
                 </div>
 
                 <div>
-                  <label className="mb-1 block text-xs font-medium text-zinc-300">
-                    Model
-                  </label>
+                  <label className="mb-1 block text-xs font-medium text-zinc-300">Model</label>
                   <select
                     value={chatModel}
                     onChange={(e) => setChatModel(e.target.value)}
@@ -1066,13 +971,8 @@ export function PlaygroundPage() {
                 </div>
 
                 <div className="flex items-center justify-between">
-                  <span className="text-xs font-medium text-zinc-300">
-                    Stream Response (SSE)
-                  </span>
-                  <Switch
-                    checked={chatStream}
-                    onCheckedChange={setChatStream}
-                  />
+                  <span className="text-xs font-medium text-zinc-300">Stream Response (SSE)</span>
+                  <Switch checked={chatStream} onCheckedChange={setChatStream} />
                 </div>
 
                 <div>
@@ -1115,11 +1015,7 @@ export function PlaygroundPage() {
               </CardContent>
             </Card>
 
-            <CurlInspector
-              curlCmd={chatCurl}
-              rawResponse={chatRawResp}
-              rawKey={rawKey}
-            />
+            <CurlInspector curlCmd={chatCurl} rawResponse={chatRawResp} rawKey={rawKey} />
           </div>
 
           {/* Conversation Column */}
@@ -1158,11 +1054,7 @@ export function PlaygroundPage() {
                         }`}
                       >
                         {m.content ||
-                          (chatStreaming ? (
-                            <span className="animate-pulse">Thinking...</span>
-                          ) : (
-                            ""
-                          ))}
+                          (chatStreaming ? <span className="animate-pulse">Thinking...</span> : "")}
                       </div>
                     </div>
                   ))
@@ -1190,11 +1082,7 @@ export function PlaygroundPage() {
                       Stop
                     </Button>
                   ) : (
-                    <Button
-                      variant="primary"
-                      onClick={handleSendChat}
-                      disabled={!chatInput.trim()}
-                    >
+                    <Button variant="primary" onClick={handleSendChat} disabled={!chatInput.trim()}>
                       Send
                     </Button>
                   )}
@@ -1218,9 +1106,7 @@ export function PlaygroundPage() {
               </CardHeader>
               <CardContent className="space-y-4">
                 <div>
-                  <label className="mb-1 block text-xs font-medium text-zinc-300">
-                    Mode
-                  </label>
+                  <label className="mb-1 block text-xs font-medium text-zinc-300">Mode</label>
                   <div className="grid grid-cols-2 gap-1 rounded-lg border border-zinc-800 bg-zinc-950 p-1 text-xs">
                     <button
                       type="button"
@@ -1248,9 +1134,7 @@ export function PlaygroundPage() {
                 </div>
 
                 <div>
-                  <label className="mb-1 block text-xs font-medium text-zinc-300">
-                    Prompt
-                  </label>
+                  <label className="mb-1 block text-xs font-medium text-zinc-300">Prompt</label>
                   <Textarea
                     rows={4}
                     placeholder="A neon shiba inu in rainy Tokyo cyberpunk street..."
@@ -1293,12 +1177,8 @@ export function PlaygroundPage() {
 
                 <div className="flex items-center justify-between">
                   <div>
-                    <span className="text-xs font-medium text-zinc-300">
-                      Async Task Mode
-                    </span>
-                    <p className="text-[11px] text-zinc-500">
-                      Return task ID & poll status
-                    </p>
+                    <span className="text-xs font-medium text-zinc-300">Async Task Mode</span>
+                    <p className="text-[11px] text-zinc-500">Return task ID & poll status</p>
                   </div>
                   <Switch checked={imgAsync} onCheckedChange={setImgAsync} />
                 </div>
@@ -1306,9 +1186,7 @@ export function PlaygroundPage() {
                 <div>
                   <label className="mb-1 block text-xs font-medium text-zinc-300">
                     Reference Image URL{" "}
-                    {imgMode === "edits" && (
-                      <span className="text-rose-400">*</span>
-                    )}
+                    {imgMode === "edits" && <span className="text-rose-400">*</span>}
                   </label>
                   <Input
                     placeholder="https://... or data:image/png;base64,..."
@@ -1323,21 +1201,14 @@ export function PlaygroundPage() {
                   className="w-full"
                   loading={imgLoading}
                   onClick={handleGenerateImage}
-                  disabled={
-                    !imgPrompt.trim() ||
-                    (imgMode === "edits" && !imgRefUrl.trim())
-                  }
+                  disabled={!imgPrompt.trim() || (imgMode === "edits" && !imgRefUrl.trim())}
                 >
                   Generate Image
                 </Button>
               </CardContent>
             </Card>
 
-            <CurlInspector
-              curlCmd={imgCurl}
-              rawResponse={imgRawResp}
-              rawKey={rawKey}
-            />
+            <CurlInspector curlCmd={imgCurl} rawResponse={imgRawResp} rawKey={rawKey} />
           </div>
 
           <div className="space-y-4 lg:col-span-7 xl:col-span-7 2xl:col-span-8">
@@ -1345,9 +1216,7 @@ export function PlaygroundPage() {
               {imgLoading ? (
                 <div className="flex flex-col items-center justify-center text-center space-y-3">
                   <div className="h-8 w-8 animate-spin rounded-full border-2 border-blue-500 border-t-transparent" />
-                  <p className="text-sm text-zinc-300">
-                    Generating image via WSS pool...
-                  </p>
+                  <p className="text-sm text-zinc-300">Generating image via WSS pool...</p>
                   {imgTaskProgress !== null && (
                     <div className="w-64 rounded-full bg-zinc-800 h-2 overflow-hidden">
                       <div
@@ -1388,9 +1257,7 @@ export function PlaygroundPage() {
                 <div className="text-center text-zinc-500 space-y-2">
                   <ImageIcon className="h-10 w-10 mx-auto opacity-40" />
                   <p className="text-sm">No image generated yet.</p>
-                  <p className="text-xs text-zinc-600">
-                    Enter a prompt and click Generate Image.
-                  </p>
+                  <p className="text-xs text-zinc-600">Enter a prompt and click Generate Image.</p>
                 </div>
               )}
             </Card>
@@ -1411,9 +1278,7 @@ export function PlaygroundPage() {
               </CardHeader>
               <CardContent className="space-y-4">
                 <div>
-                  <label className="mb-1 block text-xs font-medium text-zinc-300">
-                    Prompt
-                  </label>
+                  <label className="mb-1 block text-xs font-medium text-zinc-300">Prompt</label>
                   <Textarea
                     rows={4}
                     placeholder="Golden maple leaves drifting gently in autumn wind..."
@@ -1477,11 +1342,7 @@ export function PlaygroundPage() {
               </CardContent>
             </Card>
 
-            <CurlInspector
-              curlCmd={vidCurl}
-              rawResponse={vidRawResp}
-              rawKey={rawKey}
-            />
+            <CurlInspector curlCmd={vidCurl} rawResponse={vidRawResp} rawKey={rawKey} />
           </div>
 
           <div className="space-y-4 lg:col-span-7 xl:col-span-7 2xl:col-span-8">
@@ -1529,9 +1390,7 @@ export function PlaygroundPage() {
                 <div className="text-center text-zinc-500 space-y-2">
                   <Film className="h-10 w-10 mx-auto opacity-40" />
                   <p className="text-sm">No video generated yet.</p>
-                  <p className="text-xs text-zinc-600">
-                    Enter a prompt and click Generate Video.
-                  </p>
+                  <p className="text-xs text-zinc-600">Enter a prompt and click Generate Video.</p>
                 </div>
               )}
             </Card>
@@ -1552,8 +1411,7 @@ export function PlaygroundPage() {
                   <div>
                     <CardTitle>Voice Catalog</CardTitle>
                     <CardDescription>
-                      Listen to sample audio previews and select a voice for
-                      speech generation.
+                      Listen to sample audio previews and select a voice for speech generation.
                     </CardDescription>
                   </div>
                 </div>
@@ -1581,9 +1439,7 @@ export function PlaygroundPage() {
                     }}
                     className="rounded-lg border border-zinc-800 bg-zinc-950 px-2.5 py-1.5 text-xs text-zinc-100 focus:border-blue-500 focus:outline-none"
                   >
-                    <option value="">
-                      All Languages ({availableLangGroups.length})
-                    </option>
+                    <option value="">All Languages ({availableLangGroups.length})</option>
                     {availableLangGroups.map((g) => (
                       <option key={g} value={g}>
                         {g}
@@ -1617,10 +1473,7 @@ export function PlaygroundPage() {
                     <tbody className="divide-y divide-zinc-800/60 bg-zinc-950/40">
                       {pageVoices.length === 0 ? (
                         <tr>
-                          <td
-                            colSpan={3}
-                            className="py-6 text-center text-zinc-500"
-                          >
+                          <td colSpan={3} className="py-6 text-center text-zinc-500">
                             No voices found matching criteria.
                           </td>
                         </tr>
@@ -1630,10 +1483,7 @@ export function PlaygroundPage() {
                           const isPlaying = playingVoiceId === rowKey;
                           const isLoading = previewLoadingId === rowKey;
                           return (
-                            <tr
-                              key={rowKey}
-                              className="hover:bg-zinc-900/50 transition-colors"
-                            >
+                            <tr key={rowKey} className="hover:bg-zinc-900/50 transition-colors">
                               <td className="py-2.5 px-3">
                                 <div
                                   className="font-semibold text-zinc-200"
@@ -1641,9 +1491,7 @@ export function PlaygroundPage() {
                                 >
                                   {v.name}
                                 </div>
-                                <div className="text-[10px] font-mono text-zinc-500">
-                                  {v.id}
-                                </div>
+                                <div className="text-[10px] font-mono text-zinc-500">{v.id}</div>
                                 {v.long_description && (
                                   <div
                                     className="text-[11px] text-zinc-400 italic mt-0.5 line-clamp-1 max-w-[220px]"
@@ -1654,9 +1502,7 @@ export function PlaygroundPage() {
                                 )}
                               </td>
                               <td className="py-2.5 px-3">
-                                <div className="text-zinc-300">
-                                  {v.language_group}
-                                </div>
+                                <div className="text-zinc-300">{v.language_group}</div>
                                 <div className="text-[10px] text-zinc-500">
                                   {v.gender} · {v.accent} · {v.tone}
                                 </div>
@@ -1702,8 +1548,7 @@ export function PlaygroundPage() {
                 {/* Pagination */}
                 <div className="flex items-center justify-between text-xs text-zinc-400 pt-1">
                   <span>
-                    Showing {pageVoices.length} of {filteredVoices.length}{" "}
-                    voices
+                    Showing {pageVoices.length} of {filteredVoices.length} voices
                   </span>
                   <div className="flex items-center gap-1.5">
                     <Button
@@ -1722,9 +1567,7 @@ export function PlaygroundPage() {
                       variant="outline"
                       size="sm"
                       disabled={voicePage >= totalPages}
-                      onClick={() =>
-                        setVoicePage((p) => Math.min(totalPages, p + 1))
-                      }
+                      onClick={() => setVoicePage((p) => Math.min(totalPages, p + 1))}
                       className="h-6 px-2 text-[11px]"
                     >
                       Next
@@ -1758,9 +1601,7 @@ export function PlaygroundPage() {
                     />
                   </div>
                   <div>
-                    <label className="mb-1 block text-xs font-medium text-zinc-300">
-                      Model
-                    </label>
+                    <label className="mb-1 block text-xs font-medium text-zinc-300">Model</label>
                     <select
                       value={speechModel}
                       onChange={(e) => setSpeechModel(e.target.value)}
@@ -1837,12 +1678,8 @@ export function PlaygroundPage() {
 
                 <div>
                   <div className="mb-1 flex items-center justify-between">
-                    <label className="text-xs font-medium text-zinc-300">
-                      Input Text
-                    </label>
-                    <span className="text-[10px] text-zinc-500">
-                      {speechInput.length} / 4096
-                    </span>
+                    <label className="text-xs font-medium text-zinc-300">Input Text</label>
+                    <span className="text-[10px] text-zinc-500">{speechInput.length} / 4096</span>
                   </div>
                   <Textarea
                     rows={4}
@@ -1902,39 +1739,24 @@ export function PlaygroundPage() {
                 {speechAudioUrl && (
                   <div className="rounded-lg border border-emerald-500/30 bg-emerald-500/10 p-3 space-y-2">
                     <div className="flex items-center justify-between">
-                      <span className="text-xs font-semibold text-emerald-400">
-                        Audio Ready
-                      </span>
+                      <span className="text-xs font-semibold text-emerald-400">Audio Ready</span>
                       <a
                         href={speechAudioUrl}
                         download={speechFormat === "wav" ? "speech.wav" : "speech.mp3"}
                       >
-                        <Button
-                          variant="outline"
-                          size="sm"
-                          className="h-6 px-2 text-[11px]"
-                        >
+                        <Button variant="outline" size="sm" className="h-6 px-2 text-[11px]">
                           <Download className="h-3 w-3" />
                           {speechFormat === "wav" ? "Download WAV" : "Download MP3"}
                         </Button>
                       </a>
                     </div>
-                    <audio
-                      src={speechAudioUrl}
-                      controls
-                      className="w-full h-8"
-                      autoPlay
-                    />
+                    <audio src={speechAudioUrl} controls className="w-full h-8" autoPlay />
                   </div>
                 )}
               </CardContent>
             </Card>
 
-            <CurlInspector
-              curlCmd={speechCurl}
-              rawResponse={speechRawResp}
-              rawKey={rawKey}
-            />
+            <CurlInspector curlCmd={speechCurl} rawResponse={speechRawResp} rawKey={rawKey} />
           </div>
         </div>
       )}

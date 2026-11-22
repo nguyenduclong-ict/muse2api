@@ -18,7 +18,7 @@
     - Truyền `{ "source": "voice_preview", "voice_id", "voice_name", "language", "sample_text" }` vào `db.create_task`.
   - `packages/backend/routers/admin_core.py`:
     - Thêm endpoint `GET /admin/tasks/{task_id}` trả về chi tiết task kèm `input_request` (404 nếu không tìm thấy).
-  - `packages/backend/tests/test_task_input_request.py` *(mới)*:
+  - `packages/backend/tests/test_task_input_request.py` _(mới)_:
     - Unit & integration tests kiểm tra migration DB, sanitize base64, cắt `32 KB` giữ JSON hợp lệ, lưu đủ 5 nguồn, `GET /admin/tasks` không trả `input_request_json` và `GET /admin/tasks/{id}` trả đúng `input_request`.
 - **Frontend:**
   - `packages/frontend/src/pages/TasksMediaPage.tsx`:

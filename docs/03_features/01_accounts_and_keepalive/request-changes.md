@@ -1,5 +1,18 @@
 # Request changes: Accounts & Keep-Alive
 
+## 2026-11-22 — Reset Muse thủ công & Auto-Reset định kỳ theo tài khoản
+
+- **Yêu cầu:** Bổ sung tính năng Reset Muse thủ công cho từng tài khoản (tương đương luồng _Cài đặt → Kiểm soát dữ liệu → Đặt lại Muse_ trên `muse.ai`) và tính năng Auto-Reset định kỳ theo khoảng thời gian lặp lại kèm cờ `auto_reset` riêng cho từng tài khoản và cơ chế đếm request phát sinh.
+- **Phân loại:** Feature mở rộng
+- **Đặc tả thay đổi:**
+  - `spec.md`: cập nhật `Phạm vi`, `FR-001`, `FR-008`, `FR-010`; bổ sung `FR-014`, `FR-015`, `BR-006`, `BR-007`, `BR-008`, `AC-015`..`AC-019`.
+  - `design.md`: bổ sung nút `[Reset]`, tag `((Auto))`, badge `((resetting)){info}` trên bảng Accounts, công tắc `Auto Reset` trong modal Import/Edit (kèm thông tin `Last Reset` & `Requests since reset` trong Edit) và modal xác nhận `Reset Muse`.
+  - `logic.md`: bổ sung Sequence Diagram cho Manual Reset & Auto-Reset, cập nhật bảng `UI Event Handlers`, thêm mục thuật toán Reset Muse (`POST /api/hatch/replace-vm`), drain `in_flight`, đếm `requests_since_reset`, scheduler tuần tự `ResetService`, backoff 15 phút, `reset_logs` (30 dòng/tài khoản) và crash recovery.
+  - `../../02_basic_design/01_api_overview.md`: bổ sung `POST /admin/accounts/{id}/reset`, `POST /admin/accounts/reset-due`, `GET /admin/accounts/reset-logs`.
+  - `../../02_basic_design/02_database/erd.md`, `../../02_basic_design/02_database/schema_summary.md`: bổ sung 5 cột reset trên `accounts` và bảng mới `reset_logs`.
+- **Quyết định:** Sử dụng giao thức `POST /api/hatch/replace-vm` (đã kiểm chứng thực nghiệm trên tài khoản `hatch_vm`, bỏ qua bước nhập tên tác nhân phía client vì không gửi lên server); không hỗ trợ `hatch_cvm` (yêu cầu PIN/recovery key); API thủ công trả `202 Accepted` chạy nền với `status = "resetting"`; auto-reset chạy tuần tự từng tài khoản theo `interval_minutes`, hoãn khi tài khoản bận (`in_flight > 0`), khi chưa phát sinh request (`requests_since_reset == 0`), hoặc khi pool chỉ còn `<= 1` tài khoản `healthy`; tách bảng `reset_logs` riêng để không bị `keepalive_logs` (giới hạn 20 dòng) đẩy trôi.
+- **Task:** [T-019](../../04_tasks/019_muse_reset_and_auto_reset/plan.md)
+
 ## 2026-11-19 — Cấu hình loại model hỗ trợ (`chat`, `image`, `video`, `speech`) trên từng tài khoản
 
 - **Yêu cầu:** Thêm cài đặt chọn các loại model hỗ trợ (`chat`, `image`, `video`, `speech`) trên từng tài khoản; tài khoản tắt loại model nào thì không được chọn cho các request thuộc loại đó.

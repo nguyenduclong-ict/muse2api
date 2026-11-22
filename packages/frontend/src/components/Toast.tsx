@@ -50,11 +50,15 @@ export function ToastProvider({ children }: { children: React.ReactNode }) {
               "pointer-events-auto flex items-start gap-2.5 rounded-xl border px-3.5 py-2.5 text-xs shadow-lg backdrop-blur-md transition-all",
               t.type === "success" && "border-emerald-500/30 bg-zinc-900/95 text-emerald-200",
               t.type === "error" && "border-rose-500/30 bg-zinc-900/95 text-rose-200",
-              t.type === "info" && "border-blue-500/30 bg-zinc-900/95 text-zinc-200"
+              t.type === "info" && "border-blue-500/30 bg-zinc-900/95 text-zinc-200",
             )}
           >
-            {t.type === "success" && <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-400" />}
-            {t.type === "error" && <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-rose-400" />}
+            {t.type === "success" && (
+              <CheckCircle2 className="mt-0.5 h-4 w-4 shrink-0 text-emerald-400" />
+            )}
+            {t.type === "error" && (
+              <AlertCircle className="mt-0.5 h-4 w-4 shrink-0 text-rose-400" />
+            )}
             {t.type === "info" && <Info className="mt-0.5 h-4 w-4 shrink-0 text-blue-400" />}
             <span className="flex-1 leading-relaxed">{t.message}</span>
             <button

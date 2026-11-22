@@ -1,0 +1,10 @@
+node_modules
+packages/frontend/dist
+package-lock.json
+*.tsbuildinfo
+.venv
+__pycache__
+uv.lock
+data
+.agents
+.git

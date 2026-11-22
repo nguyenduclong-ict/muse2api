@@ -310,6 +310,137 @@ def renew_session_http(cookies: dict[str, str], proxy_url: str = "", timeout: fl
 
 
 _QUOTA_NEXT_ACTION_ID = "40e0249eeae158685b6a8d0c3b203f53dd4f2c7d63"
+_UPDATE_USER_PREFERENCES_NEXT_ACTION_ID = "40076d65709b71539d10a9f0f52656ee03877e4d17"
+
+
+def fetch_live_session_http(cookies: dict[str, str], proxy_url: str = "", timeout: float = 20.0) -> dict[str, Any]:
+    """Fetch live muse.ai session inventory via GET /api/session?vm_state=live."""
+    headers = {
+        "Cookie": cookies_to_header(cookies),
+        "User-Agent": USER_AGENT,
+        "Accept": "application/json",
+    }
+    r = requests.get(
+        "https://muse.ai/api/session?vm_state=live",
+        headers=headers,
+        proxies=requests_proxies(proxy_url),
+        timeout=timeout,
+    )
+    if r.status_code == 401:
+        raise MuseAuthError("Session expired (/api/session?vm_state=live HTTP 401)")
+    if r.status_code != 200:
+        raise MuseWSSError(f"/api/session?vm_state=live HTTP {r.status_code}")
+    data = r.json()
+    if data.get("status") != "assigned":
+        raise MuseAuthError(f"/api/session?vm_state=live status={data.get('status')!r}")
+    return data
+
+
+def replace_vm_http(
+    cookies: dict[str, str],
+    source_env_id: str,
+    destination_type: str = "standard",
+    intent: str = "reset",
+    proxy_url: str = "",
+    timeout: float = 60.0,
+) -> dict[str, Any]:
+    """Trigger muse.ai VM replacement (Reset Muse) via POST /api/hatch/replace-vm."""
+    headers = {
+        "Cookie": cookies_to_header(cookies),
+        "User-Agent": USER_AGENT,
+        "Accept": "*/*",
+        "Content-Type": "application/json",
+        "Origin": "https://muse.ai",
+        "Referer": "https://muse.ai/settings",
+        "sec-fetch-site": "same-origin",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-dest": "empty",
+    }
+    r = requests.post(
+        "https://muse.ai/api/hatch/replace-vm",
+        headers=headers,
+        json={
+            "sourceEnvId": source_env_id,
+            "destinationType": destination_type,
+            "intent": intent,
+        },
+        proxies=requests_proxies(proxy_url),
+        timeout=timeout,
+    )
+    if r.status_code == 401:
+        raise MuseAuthError("Reset Muse HTTP 401 (session expired)")
+    try:
+        data = r.json()
+    except Exception:
+        data = None
+    if not r.ok:
+        code = data.get("code") if isinstance(data, dict) else None
+        if code == "authentication_required":
+            raise MuseAuthError("Reset Muse authentication_required")
+        detail = code or r.text[:150]
+        raise MuseWSSError(f"/api/hatch/replace-vm HTTP {r.status_code}: {detail}")
+    if not isinstance(data, dict) or data.get("ok") is not True or not data.get("vmId"):
+        code = data.get("code") if isinstance(data, dict) else "invalid_response"
+        if code == "authentication_required":
+            raise MuseAuthError("Reset Muse authentication_required")
+        raise MuseWSSError(f"/api/hatch/replace-vm failed: {code}")
+    return data
+
+
+def sync_vm_selection_best_effort(
+    cookies: dict[str, str],
+    new_vm_id: str,
+    new_gateway_url: str,
+    expected_revision: int | None,
+    proxy_url: str = "",
+    timeout: float = 20.0,
+) -> bool:
+    """Best-effort sync of vm_selection.override via updateUserPreferencesAction."""
+    if expected_revision is None:
+        return False
+    proxies = requests_proxies(proxy_url)
+    cookie_hdr = cookies_to_header(cookies)
+    try:
+        r_set = requests.get(
+            "https://muse.ai/settings",
+            headers={"Cookie": cookie_hdr, "User-Agent": USER_AGENT},
+            proxies=proxies,
+            timeout=timeout,
+        )
+        if r_set.status_code != 200:
+            return False
+        m_owner = re.search(r'ownerId["\\]*:\s*["\\]*([A-Za-z0-9_-]+)', r_set.text)
+        if not m_owner:
+            return False
+        owner_id = m_owner.group(1)
+        payload = [{
+            "pawOverrides": json.dumps({"gatewayUrl": new_gateway_url, "vmName": new_vm_id}, separators=(",", ":")),
+            "vmOverrideGatewayUrl": new_gateway_url,
+            "vmOverrideVmName": new_vm_id,
+            "expectedVmSelectionRevision": int(expected_revision),
+            "expectedVmSelectionOwnerId": owner_id,
+        }]
+        r_pref = requests.post(
+            "https://muse.ai/settings",
+            headers={
+                "Cookie": cookie_hdr,
+                "User-Agent": USER_AGENT,
+                "Origin": "https://muse.ai",
+                "Referer": "https://muse.ai/settings",
+                "next-action": _UPDATE_USER_PREFERENCES_NEXT_ACTION_ID,
+                "Accept": "text/x-component",
+                "Content-Type": "text/plain;charset=UTF-8",
+                "sec-fetch-site": "same-origin",
+                "sec-fetch-mode": "cors",
+                "sec-fetch-dest": "empty",
+            },
+            data=json.dumps(payload),
+            proxies=proxies,
+            timeout=timeout,
+        )
+        return r_pref.status_code == 200
+    except Exception:
+        return False
 
 
 def fetch_quota_http(cookies: dict[str, str], proxy_url: str = "", timeout: float = 15.0) -> dict[str, Any]:

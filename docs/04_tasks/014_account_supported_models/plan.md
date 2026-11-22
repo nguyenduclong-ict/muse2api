@@ -24,7 +24,7 @@
     - Truyền đúng `capability` trong `execute_chat` (`"chat"`), `stream_chat_events` (`"chat"`), `generate_media` (`"image"` / `"video"` / `"speech"` tương ứng `expect_kind` `"image"` / `"video"` / `"audio"`).
   - `packages/backend/routers/v1_openai.py`:
     - Gọi `pool.ensure_candidate(capability)` sớm trước khi tạo `StreamingResponse` (ở `/v1/chat/completions`, `/v1/responses`), trước khi tạo task `queued` + background thread (ở `/v1/videos`, `/v1/videos/generations`, `/v1/images/tasks`, `async=true` trên `/v1/images/generations` & `/v1/images/edits`), và bắt `NoCandidateAccountError` ở các nhánh sync (`/v1/chat/completions`, `/v1/responses`, `/v1/images/*`, `/v1/audio/speech`) để trả HTTP `503 Service Unavailable` chuẩn OpenAI (`type: "service_unavailable_error"`) mà không tạo task rác.
-  - `packages/backend/tests/test_account_supported_models.py` *(tạo mới)*:
+  - `packages/backend/tests/test_account_supported_models.py` _(tạo mới)_:
     - Unit & integration tests cho migration DB, CRUD/Export `/admin/accounts`, lọc `_candidate_accounts(capability)`, định tuyến các endpoint `/v1/*` và fail-fast `503`.
 - **Frontend:**
   - `packages/frontend/src/pages/AccountsPage.tsx`:

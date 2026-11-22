@@ -1,6 +1,7 @@
 """Persistent WSS connection pool with LRU scheduling and failover."""
 from __future__ import annotations
 
+from contextlib import contextmanager
 import json
 import logging
 import os
@@ -84,8 +85,40 @@ class WSSPool:
         self._lock = threading.Lock()
         self._clients: dict[str, MuseWSSClient] = {}
         self._account_locks: dict[str, threading.Lock] = {}
+        self._in_flight: dict[str, int] = {}
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+
+    def in_flight_count(self, account_id: str) -> int:
+        with self._lock:
+            return self._in_flight.get(account_id, 0)
+
+    @contextmanager
+    def _track_in_flight(self, account_id: str) -> Iterator[None]:
+        with self._lock:
+            self._in_flight[account_id] = self._in_flight.get(account_id, 0) + 1
+        try:
+            yield
+        finally:
+            with self._lock:
+                cur = self._in_flight.get(account_id, 0)
+                if cur <= 1:
+                    self._in_flight.pop(account_id, None)
+                else:
+                    self._in_flight[account_id] = cur - 1
+
+    def healthy_available_count(self) -> int:
+        return sum(
+            1
+            for a in self.db.list_accounts()
+            if a["enabled"]
+            and a["status"] == "healthy"
+            and not is_quota_exhausted(a.get("quota_json"))
+        )
+
+    def _is_resetting(self, account_id: str) -> bool:
+        acc = self.db.get_account(account_id)
+        return bool(acc and acc.get("status") == "resetting")
 
     def _get_acc_lock(self, account_id: str) -> threading.Lock:
         with self._lock:
@@ -121,6 +154,8 @@ class WSSPool:
             raise MuseWSSError(f"Account {account_id} not found")
         if not acc["enabled"]:
             raise MuseWSSError(f"Account {account_id} is disabled")
+        if acc.get("status") == "resetting":
+            raise MuseWSSError(f"Account {account_id} is currently resetting")
 
         lock = self._get_acc_lock(account_id)
         with lock:
@@ -232,7 +267,7 @@ class WSSPool:
             if self._stop.is_set():
                 return
             aid = acc["id"]
-            if not acc["enabled"] or acc["status"] == "expired" or is_quota_exhausted(acc.get("quota_json")):
+            if not acc["enabled"] or acc["status"] in ("expired", "resetting") or is_quota_exhausted(acc.get("quota_json")):
                 if self.is_connected(aid):
                     self.close_account(aid)
                 continue
@@ -293,43 +328,47 @@ class WSSPool:
         for acc in candidates:
             aid = acc["id"]
             try:
-                client = self.get_client(aid)
-                self.db.update_account(aid, last_used_at=time.time(), status="healthy", last_error="")
-                session_id = str(uuid.uuid4())
-                st, raw = client.request(
-                    "POST", "/chat/stream",
-                    {"items": items, "session_id": session_id},
-                    timeout=30.0,
-                )
-                if st == 401:
-                    raise MuseAuthError("chat.stream returned 401")
-                if st >= 400:
-                    raise MuseWSSError(f"chat.stream HTTP {st}: {raw[:200]!r}")
+                with self._track_in_flight(aid):
+                    client = self.get_client(aid)
+                    self.db.update_account(aid, last_used_at=time.time(), status="healthy", last_error="")
+                    self.db.increment_requests_since_reset(aid)
+                    session_id = str(uuid.uuid4())
+                    st, raw = client.request(
+                        "POST", "/chat/stream",
+                        {"items": items, "session_id": session_id},
+                        timeout=30.0,
+                    )
+                    if st == 401:
+                        raise MuseAuthError("chat.stream returned 401")
+                    if st >= 400:
+                        raise MuseWSSError(f"chat.stream HTTP {st}: {raw[:200]!r}")
 
-                # Wait for completion via subscribe
-                for _, chunk in client.stream_rpc("POST", "/chat/subscribe", {"session_id": session_id}, timeout=timeout):
-                    txt = chunk.decode("utf-8", errors="replace")
-                    for line in txt.splitlines():
-                        if not line.strip():
-                            continue
-                        try:
-                            ev = json.loads(line)
-                        except json.JSONDecodeError:
-                            continue
-                        if not isinstance(ev, dict):
-                            continue
-                        if ev.get("event") == "task.status" and _as_dict(ev.get("payload")).get("status") == "completed":
-                            return aid, session_id, self._extract_latest_assistant_text(client, session_id)
-                return aid, session_id, self._extract_latest_assistant_text(client, session_id)
+                    # Wait for completion via subscribe
+                    for _, chunk in client.stream_rpc("POST", "/chat/subscribe", {"session_id": session_id}, timeout=timeout):
+                        txt = chunk.decode("utf-8", errors="replace")
+                        for line in txt.splitlines():
+                            if not line.strip():
+                                continue
+                            try:
+                                ev = json.loads(line)
+                            except json.JSONDecodeError:
+                                continue
+                            if not isinstance(ev, dict):
+                                continue
+                            if ev.get("event") == "task.status" and _as_dict(ev.get("payload")).get("status") == "completed":
+                                return aid, session_id, self._extract_latest_assistant_text(client, session_id)
+                    return aid, session_id, self._extract_latest_assistant_text(client, session_id)
             except MuseAuthError as exc:
                 logger.warning("execute_chat auth error on account %s: %s", aid, exc)
                 self.close_account(aid)
-                self.db.update_account(aid, status="expired", last_error=str(exc))
+                if not self._is_resetting(aid):
+                    self.db.update_account(aid, status="expired", last_error=str(exc))
                 last_err = exc
             except Exception as exc:
                 logger.exception("execute_chat failed on account %s", aid)
                 self.close_account(aid)
-                self.db.update_account(aid, status="cooldown", last_error=str(exc))
+                if not self._is_resetting(aid):
+                    self.db.update_account(aid, status="cooldown", last_error=str(exc))
                 last_err = exc
 
         raise MuseWSSError(f"All accounts failed: {last_err}")
@@ -344,54 +383,58 @@ class WSSPool:
         for acc in candidates:
             aid = acc["id"]
             try:
-                client = self.get_client(aid)
-                self.db.update_account(aid, last_used_at=time.time(), status="healthy", last_error="")
-                session_id = str(uuid.uuid4())
-                st, raw = client.request(
-                    "POST", "/chat/stream",
-                    {"items": items, "session_id": session_id},
-                    timeout=30.0,
-                )
-                if st == 401:
-                    raise MuseAuthError("chat.stream returned 401")
-                if st >= 400:
-                    raise MuseWSSError(f"chat.stream HTTP {st}: {raw[:200]!r}")
+                with self._track_in_flight(aid):
+                    client = self.get_client(aid)
+                    self.db.update_account(aid, last_used_at=time.time(), status="healthy", last_error="")
+                    self.db.increment_requests_since_reset(aid)
+                    session_id = str(uuid.uuid4())
+                    st, raw = client.request(
+                        "POST", "/chat/stream",
+                        {"items": items, "session_id": session_id},
+                        timeout=30.0,
+                    )
+                    if st == 401:
+                        raise MuseAuthError("chat.stream returned 401")
+                    if st >= 400:
+                        raise MuseWSSError(f"chat.stream HTTP {st}: {raw[:200]!r}")
 
-                sent_len = 0
-                for _, chunk in client.stream_rpc("POST", "/chat/subscribe", {"session_id": session_id}, timeout=timeout):
-                    txt = chunk.decode("utf-8", errors="replace")
-                    for line in txt.splitlines():
-                        if not line.strip():
-                            continue
-                        try:
-                            ev = json.loads(line)
-                        except json.JSONDecodeError:
-                            continue
-                        if not isinstance(ev, dict):
-                            continue
-                        ev_name = ev.get("event", "")
-                        payload = _as_dict(ev.get("payload"))
-                        if ev_name in ("message.delta", "delta.text") and isinstance(payload.get("delta"), str):
-                            yield "delta", payload["delta"]
-                            sent_len += len(payload["delta"])
-                        elif ev_name == "task.status" and payload.get("status") == "completed":
-                            if sent_len == 0:
-                                final_txt = self._extract_latest_assistant_text(client, session_id)
-                                if final_txt:
-                                    yield "delta", final_txt
-                            yield "done", session_id
-                            return
-                yield "done", session_id
-                return
+                    sent_len = 0
+                    for _, chunk in client.stream_rpc("POST", "/chat/subscribe", {"session_id": session_id}, timeout=timeout):
+                        txt = chunk.decode("utf-8", errors="replace")
+                        for line in txt.splitlines():
+                            if not line.strip():
+                                continue
+                            try:
+                                ev = json.loads(line)
+                            except json.JSONDecodeError:
+                                continue
+                            if not isinstance(ev, dict):
+                                continue
+                            ev_name = ev.get("event", "")
+                            payload = _as_dict(ev.get("payload"))
+                            if ev_name in ("message.delta", "delta.text") and isinstance(payload.get("delta"), str):
+                                yield "delta", payload["delta"]
+                                sent_len += len(payload["delta"])
+                            elif ev_name == "task.status" and payload.get("status") == "completed":
+                                if sent_len == 0:
+                                    final_txt = self._extract_latest_assistant_text(client, session_id)
+                                    if final_txt:
+                                        yield "delta", final_txt
+                                yield "done", session_id
+                                return
+                    yield "done", session_id
+                    return
             except MuseAuthError as exc:
                 logger.warning("stream_chat_events auth error on account %s: %s", aid, exc)
                 self.close_account(aid)
-                self.db.update_account(aid, status="expired", last_error=str(exc))
+                if not self._is_resetting(aid):
+                    self.db.update_account(aid, status="expired", last_error=str(exc))
                 last_err = exc
             except Exception as exc:
                 logger.exception("stream_chat_events failed on account %s", aid)
                 self.close_account(aid)
-                self.db.update_account(aid, status="cooldown", last_error=str(exc))
+                if not self._is_resetting(aid):
+                    self.db.update_account(aid, status="cooldown", last_error=str(exc))
                 last_err = exc
 
         raise MuseWSSError(f"All accounts failed: {last_err}")
@@ -420,64 +463,68 @@ class WSSPool:
                 break
             aid = acc["id"]
             try:
-                client = self.get_client(aid)
-                self.db.update_account(aid, last_used_at=time.time(), status="healthy", last_error="")
-                session_id = str(uuid.uuid4())
-                if callable(on_account_selected):
-                    try:
-                        on_account_selected(aid, session_id)
-                    except Exception:
-                        pass
-                st, raw = client.request(
-                    "POST", "/chat/stream",
-                    {"items": items, "session_id": session_id},
-                    timeout=min(30.0, remaining),
-                )
-                if st == 401:
-                    raise MuseAuthError("chat.stream returned 401")
-                if st >= 400:
-                    raise MuseWSSError(f"chat.stream HTTP {st}: {raw[:200]!r}")
-
-                stream_rem = max(5.0, total_deadline - time.time())
-                stream_idle = min(effective_idle, stream_rem)
-                for _, chunk in client.stream_rpc(
-                    "POST", "/chat/subscribe",
-                    {"session_id": session_id},
-                    timeout=stream_rem,
-                    idle_timeout=stream_idle,
-                ):
-                    txt = chunk.decode("utf-8", errors="replace")
-                    for line in txt.splitlines():
-                        if not line.strip():
-                            continue
+                with self._track_in_flight(aid):
+                    client = self.get_client(aid)
+                    self.db.update_account(aid, last_used_at=time.time(), status="healthy", last_error="")
+                    self.db.increment_requests_since_reset(aid)
+                    session_id = str(uuid.uuid4())
+                    if callable(on_account_selected):
                         try:
-                            ev = json.loads(line)
-                        except json.JSONDecodeError:
-                            logger.debug("generate_media non-JSON subscribe line (acc=%s, sid=%s): %r", aid, session_id, line[:200])
-                            continue
-                        if not isinstance(ev, dict):
-                            logger.debug("generate_media non-dict subscribe event (acc=%s, sid=%s): %r", aid, session_id, ev)
-                            continue
-                        logger.debug("generate_media subscribe event (acc=%s, sid=%s, kind=%s): %s", aid, session_id, expect_kind, ev.get("event"))
-                        if ev.get("event") == "task.status" and _as_dict(ev.get("payload")).get("status") == "completed":
-                            return self._fetch_media_from_history(
-                                client, aid, session_id, expect_kind,
-                                expected_output_filename=expected_output_filename,
-                            )
+                            on_account_selected(aid, session_id)
+                        except Exception:
+                            pass
+                    st, raw = client.request(
+                        "POST", "/chat/stream",
+                        {"items": items, "session_id": session_id},
+                        timeout=min(30.0, remaining),
+                    )
+                    if st == 401:
+                        raise MuseAuthError("chat.stream returned 401")
+                    if st >= 400:
+                        raise MuseWSSError(f"chat.stream HTTP {st}: {raw[:200]!r}")
 
-                return self._fetch_media_from_history(
-                    client, aid, session_id, expect_kind,
-                    expected_output_filename=expected_output_filename,
-                )
+                    stream_rem = max(5.0, total_deadline - time.time())
+                    stream_idle = min(effective_idle, stream_rem)
+                    for _, chunk in client.stream_rpc(
+                        "POST", "/chat/subscribe",
+                        {"session_id": session_id},
+                        timeout=stream_rem,
+                        idle_timeout=stream_idle,
+                    ):
+                        txt = chunk.decode("utf-8", errors="replace")
+                        for line in txt.splitlines():
+                            if not line.strip():
+                                continue
+                            try:
+                                ev = json.loads(line)
+                            except json.JSONDecodeError:
+                                logger.debug("generate_media non-JSON subscribe line (acc=%s, sid=%s): %r", aid, session_id, line[:200])
+                                continue
+                            if not isinstance(ev, dict):
+                                logger.debug("generate_media non-dict subscribe event (acc=%s, sid=%s): %r", aid, session_id, ev)
+                                continue
+                            logger.debug("generate_media subscribe event (acc=%s, sid=%s, kind=%s): %s", aid, session_id, expect_kind, ev.get("event"))
+                            if ev.get("event") == "task.status" and _as_dict(ev.get("payload")).get("status") == "completed":
+                                return self._fetch_media_from_history(
+                                    client, aid, session_id, expect_kind,
+                                    expected_output_filename=expected_output_filename,
+                                )
+
+                    return self._fetch_media_from_history(
+                        client, aid, session_id, expect_kind,
+                        expected_output_filename=expected_output_filename,
+                    )
             except MuseAuthError as exc:
                 logger.warning("generate_media auth error (acc=%s, kind=%s): %s", aid, expect_kind, exc)
                 self.close_account(aid)
-                self.db.update_account(aid, status="expired", last_error=str(exc))
+                if not self._is_resetting(aid):
+                    self.db.update_account(aid, status="expired", last_error=str(exc))
                 last_err = exc
             except Exception as exc:
                 logger.exception("generate_media failed (acc=%s, kind=%s)", aid, expect_kind)
                 self.close_account(aid)
-                self.db.update_account(aid, status="cooldown", last_error=str(exc))
+                if not self._is_resetting(aid):
+                    self.db.update_account(aid, status="cooldown", last_error=str(exc))
                 last_err = exc
 
         raise MuseWSSError(f"All accounts failed: {last_err}")

@@ -505,6 +505,11 @@ class Database:
                     last_used_at REAL DEFAULT 0,
                     last_keepalive_at REAL DEFAULT 0,
                     last_error TEXT DEFAULT '',
+                    auto_reset INTEGER NOT NULL DEFAULT 0,
+                    last_reset_at REAL DEFAULT 0,
+                    last_reset_status TEXT DEFAULT '',
+                    last_reset_error TEXT DEFAULT '',
+                    requests_since_reset INTEGER NOT NULL DEFAULT 0,
                     created_at REAL NOT NULL,
                     updated_at REAL NOT NULL
                 );
@@ -515,6 +520,19 @@ class Database:
                     status TEXT NOT NULL,
                     vm_state TEXT DEFAULT '',
                     message TEXT DEFAULT '',
+                    created_at REAL NOT NULL,
+                    FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
+                );
+
+                CREATE TABLE IF NOT EXISTS reset_logs (
+                    id INTEGER PRIMARY KEY AUTOINCREMENT,
+                    account_id TEXT NOT NULL,
+                    trigger_type TEXT NOT NULL DEFAULT 'manual',
+                    status TEXT NOT NULL,
+                    old_vm_id TEXT DEFAULT '',
+                    new_vm_id TEXT DEFAULT '',
+                    message TEXT DEFAULT '',
+                    duration_ms INTEGER DEFAULT 0,
                     created_at REAL NOT NULL,
                     FOREIGN KEY (account_id) REFERENCES accounts(id) ON DELETE CASCADE
                 );
@@ -549,7 +567,7 @@ class Database:
                 );
                 """
             )
-            # Ensure proxy_id and supported_models_json exist on pre-existing DBs
+            # Ensure proxy_id, supported_models_json, and reset columns exist on pre-existing DBs
             cols = {r["name"] for r in conn.execute("PRAGMA table_info(accounts)").fetchall()}
             if "proxy_id" not in cols:
                 conn.execute("ALTER TABLE accounts ADD COLUMN proxy_id TEXT DEFAULT NULL REFERENCES proxies(id) ON DELETE SET NULL")
@@ -557,6 +575,16 @@ class Database:
                 conn.execute(
                     "ALTER TABLE accounts ADD COLUMN supported_models_json TEXT NOT NULL DEFAULT '[\"chat\",\"image\",\"video\",\"speech\"]'"
                 )
+            if "auto_reset" not in cols:
+                conn.execute("ALTER TABLE accounts ADD COLUMN auto_reset INTEGER NOT NULL DEFAULT 0")
+            if "last_reset_at" not in cols:
+                conn.execute("ALTER TABLE accounts ADD COLUMN last_reset_at REAL DEFAULT 0")
+            if "last_reset_status" not in cols:
+                conn.execute("ALTER TABLE accounts ADD COLUMN last_reset_status TEXT DEFAULT ''")
+            if "last_reset_error" not in cols:
+                conn.execute("ALTER TABLE accounts ADD COLUMN last_reset_error TEXT DEFAULT ''")
+            if "requests_since_reset" not in cols:
+                conn.execute("ALTER TABLE accounts ADD COLUMN requests_since_reset INTEGER NOT NULL DEFAULT 0")
             task_cols = {r["name"] for r in conn.execute("PRAGMA table_info(tasks)").fetchall()}
             if "input_request_json" not in task_cols:
                 conn.execute("ALTER TABLE tasks ADD COLUMN input_request_json TEXT DEFAULT ''")
@@ -583,6 +611,10 @@ class Database:
                 "voice_languages": {
                     "enabled": False,
                     "languages": [],
+                },
+                "auto_reset": {
+                    "enabled": False,
+                    "interval_minutes": 1440,
                 },
             }
             for k, val in defaults.items():
@@ -623,6 +655,8 @@ class Database:
             data = {r["key"]: json.loads(r["value_json"]) for r in rows}
             if "voice_languages" not in data:
                 data["voice_languages"] = {"enabled": False, "languages": []}
+            if "auto_reset" not in data:
+                data["auto_reset"] = {"enabled": False, "interval_minutes": 1440}
             return data
 
         return self._run(_op)
@@ -748,15 +782,20 @@ class Database:
 
     def create_account(self, account_id: str, label: str, cookies: dict[str, str],
                        proxy_id: str | None = None, enabled: bool = True, status: str = "unknown",
-                       supported_models: list[str] | None = None) -> dict[str, Any]:
+                       supported_models: list[str] | None = None,
+                       auto_reset: bool = False) -> dict[str, Any]:
         now = time.time()
         models_list = list(SUPPORTED_MODEL_TYPES) if supported_models is None else normalize_supported_models(supported_models)
+        initial_reset_at = now if auto_reset else 0.0
 
         def _op(conn: sqlite3.Connection) -> None:
             conn.execute(
                 """
-                INSERT INTO accounts (id, label, cookies_json, proxy_id, enabled, supported_models_json, status, created_at, updated_at)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO accounts (
+                    id, label, cookies_json, proxy_id, enabled, supported_models_json,
+                    status, auto_reset, last_reset_at, created_at, updated_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     account_id,
@@ -766,6 +805,8 @@ class Database:
                     1 if enabled else 0,
                     json.dumps(models_list),
                     status,
+                    1 if auto_reset else 0,
+                    initial_reset_at,
                     now,
                     now,
                 ),
@@ -779,7 +820,8 @@ class Database:
         if not fields:
             return self.get_account(account_id)
         allowed = {"label", "cookies_json", "proxy_id", "enabled", "supported_models_json", "status", "quota_json",
-                   "last_used_at", "last_keepalive_at", "last_error"}
+                   "last_used_at", "last_keepalive_at", "last_error",
+                   "auto_reset", "last_reset_at", "last_reset_status", "last_reset_error", "requests_since_reset"}
         updates = {k: v for k, v in fields.items() if k in allowed}
         if not updates:
             return self.get_account(account_id)
@@ -830,6 +872,82 @@ class Database:
                 "LEFT JOIN accounts a ON k.account_id = a.id ORDER BY k.id DESC LIMIT ?",
                 (limit,),
             ).fetchall()
+            return [dict(r) for r in rows]
+
+        return self._run(_op)
+
+    def increment_requests_since_reset(self, account_id: str) -> None:
+        now = time.time()
+
+        def _op(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                "UPDATE accounts SET requests_since_reset = COALESCE(requests_since_reset, 0) + 1, updated_at = ? WHERE id = ?",
+                (now, account_id),
+            )
+            conn.commit()
+
+        self._run(_op)
+
+    def recover_resetting_accounts(self) -> int:
+        now = time.time()
+
+        def _op(conn: sqlite3.Connection) -> int:
+            cur = conn.execute(
+                "UPDATE accounts SET status = 'unknown', updated_at = ? WHERE status = 'resetting'",
+                (now,),
+            )
+            conn.commit()
+            return cur.rowcount
+
+        return self._run(_op)
+
+    def add_reset_log(
+        self,
+        account_id: str,
+        trigger_type: str,
+        status: str,
+        old_vm_id: str = "",
+        new_vm_id: str = "",
+        message: str = "",
+        duration_ms: int = 0,
+    ) -> None:
+        now = time.time()
+
+        def _op(conn: sqlite3.Connection) -> None:
+            conn.execute(
+                """
+                INSERT INTO reset_logs (account_id, trigger_type, status, old_vm_id, new_vm_id, message, duration_ms, created_at)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (account_id, trigger_type, status, old_vm_id, new_vm_id, message[:500], max(0, int(duration_ms)), now),
+            )
+            # Retain only latest 30 reset logs per account
+            conn.execute(
+                """
+                DELETE FROM reset_logs WHERE account_id = ? AND id NOT IN (
+                    SELECT id FROM reset_logs WHERE account_id = ? ORDER BY id DESC LIMIT 30
+                )
+                """,
+                (account_id, account_id),
+            )
+            conn.commit()
+
+        self._run(_op)
+
+    def list_reset_logs(self, limit: int = 30, account_id: str | None = None) -> list[dict[str, Any]]:
+        def _op(conn: sqlite3.Connection) -> list[dict[str, Any]]:
+            if account_id:
+                rows = conn.execute(
+                    "SELECT r.*, a.label as account_label FROM reset_logs r "
+                    "LEFT JOIN accounts a ON r.account_id = a.id WHERE r.account_id = ? ORDER BY r.id DESC LIMIT ?",
+                    (account_id, limit),
+                ).fetchall()
+            else:
+                rows = conn.execute(
+                    "SELECT r.*, a.label as account_label FROM reset_logs r "
+                    "LEFT JOIN accounts a ON r.account_id = a.id ORDER BY r.id DESC LIMIT ?",
+                    (limit,),
+                ).fetchall()
             return [dict(r) for r in rows]
 
         return self._run(_op)

@@ -1,6 +1,7 @@
 # Tech Stack — Công nghệ sử dụng
 
 ## 1. Backend (Python 3.12+)
+
 - **Web Framework:** FastAPI + Uvicorn (ASGI, hỗ trợ SSE streaming).
 - **HTTP Client:** `requests` (HTTP bootstrap, `/api/session`, `/api/hatch/vm/wake`, hỗ trợ HTTP/SOCKS5 proxy qua `PySocks`).
 - **WebSocket & Noise Crypto:**
@@ -11,6 +12,7 @@
 - **Media Processing (tùy chọn):** `ffmpeg` phục vụ cả chuyển đổi định dạng audio (`mp3`/`wav` PCM16) và chuẩn hóa âm lượng cục bộ (2-pass `loudnorm`, `-16 LUFS`, true peak `-1.5 dB`) cho `/v1/audio/speech` và Voice Preview (cài sẵn trong Docker image; graceful fallback cho bước normalize nếu chạy dev không có `ffmpeg`).
 
 ## 2. Frontend (ReactJS)
+
 - **Core:** React 18+ + TypeScript + Vite + `react-router-dom`.
 - **UI & Styling:** Tailwind CSS + **shadcn/ui** + `lucide-react`.
 - **Data Fetching:** TanStack Query (polling trạng thái pool, tasks, quota).
@@ -20,5 +22,6 @@
   - Font: `Inter` (UI) và `JetBrains Mono` (API key, IDs, logs).
 
 ## 3. Triển khai (Deployment)
+
 - **Single-port:** FastAPI phục vụ cả `/v1/*`, `/admin/*` và file tĩnh `frontend/dist/` trên cùng một cổng (mặc định `18610`).
 - **Development:** Vite dev server chạy riêng và proxy `/v1` + `/admin` sang FastAPI.
