@@ -457,7 +457,7 @@ export function AccountsPage() {
                     <th className="w-[92px] py-2 pr-2.5 font-medium">Proxy</th>
                     <th className="w-[78px] py-2 pr-2.5 font-medium">Keep-Alive</th>
                     <th className="w-[60px] py-2 pr-2 font-medium">Enabled</th>
-                    <th className="w-[132px] py-2 pl-2 pr-1 font-medium text-right sticky right-0 z-10 bg-zinc-900">
+                    <th className="w-[132px] py-2 pl-2 pr-2 font-medium text-right sticky right-0 z-10 bg-zinc-900">
                       Actions
                     </th>
                   </tr>
@@ -561,7 +561,7 @@ export function AccountsPage() {
                             onCheckedChange={(v) => toggleMut.mutate({ id: acc.id, enabled: v })}
                           />
                         </td>
-                        <td className="py-3 pl-2 pr-1 text-right sticky right-0 z-10 bg-zinc-900 group-hover:bg-zinc-800">
+                        <td className="py-3 pl-2 pr-2 text-right sticky right-0 z-10 bg-zinc-900 group-hover:bg-zinc-800">
                           <div className="inline-flex items-center justify-end gap-1">
                             <Button
                               size="sm"
