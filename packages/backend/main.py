@@ -52,7 +52,8 @@ async def lifespan(app: FastAPI):
     if recovered_resets:
         logging.getLogger(__name__).warning("Recovered %d account(s) stuck in 'resetting' state on startup", recovered_resets)
     wss_pool = WSSPool(cfg, db)
-    keepalive = KeepAliveService(cfg, db)
+    keepalive = KeepAliveService(cfg, db, wss_pool=wss_pool)
+    wss_pool.set_reauth_callback(lambda aid: keepalive.reauth_account(aid, close_wss=False))
     cleanup = CleanupService(cfg, db)
     voice_preview = VoicePreviewService(cfg, db, wss_pool)
     reset_service = ResetService(cfg, db, wss_pool)

@@ -480,6 +480,14 @@ export function AccountsPage() {
                           >
                             {acc.id} · {acc.cookie_count} cookies
                           </div>
+                          {acc.last_reset_at != null && acc.last_reset_at > 0 && acc.last_reset_status === "ok" && (
+                            <div
+                              className="truncate font-mono text-[11px] text-zinc-500"
+                              title={`Last Muse reset: ${new Date(acc.last_reset_at * 1000).toLocaleString()}`}
+                            >
+                              Reset {formatTimeAgo(acc.last_reset_at)}
+                            </div>
+                          )}
                         </td>
                         <td className="py-3 pr-2.5 min-w-0">
                           <div className="flex flex-wrap items-center gap-1">

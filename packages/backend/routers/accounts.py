@@ -182,8 +182,10 @@ def create_account(body: AccountCreateReq, request: Request):
     test_res = pool.test_account(aid)
     if test_res.get("ok"):
         try:
-            eff_proxy = (db.get_account(aid) or {}).get("effective_proxy_url") or ""
-            q = fetch_quota_http(cookies, proxy_url=eff_proxy)
+            fresh_acc = db.get_account(aid) or acc
+            fresh_cookies = json.loads(fresh_acc["cookies_json"])
+            eff_proxy = fresh_acc.get("effective_proxy_url") or ""
+            q = fetch_quota_http(fresh_cookies, proxy_url=eff_proxy)
             db.update_account(aid, quota_json=json.dumps(q))
         except Exception:
             pass

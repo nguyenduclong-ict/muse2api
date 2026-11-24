@@ -282,7 +282,305 @@ def wake_vm_http(
         return {"status": r.text}
 
 
-def renew_session_http(cookies: dict[str, str], proxy_url: str = "", timeout: float = 20.0) -> dict[str, Any]:
+_EPHEMERAL_AUTH_COOKIES: frozenset[str] = frozenset(
+    {
+        "hatch_native_auth_csrf",
+        "hatch_native_auth_state",
+        "hatch_native_auth_temp",
+        "hatch_native_auth_save_login",
+        "hatch_native_auth_provider_sso",
+        "hatch_native_auth_provider_completion",
+        "hatch_native_auth_provider_disclosure",
+        "oauth_csrf_token",
+        "oauth_pkce_verifier",
+        "hatch_post_login_intent",
+        "hatch_post_login_oauth_url",
+        "hatch_checkpoint_oidc_return",
+    }
+)
+
+
+def extract_set_cookie_headers(resp: requests.Response) -> list[str]:
+    """Extract all Set-Cookie header lines in order from a requests.Response."""
+    raw_headers = getattr(getattr(resp, "raw", None), "headers", None)
+    if raw_headers is not None and hasattr(raw_headers, "getlist"):
+        return list(raw_headers.getlist("Set-Cookie"))
+    hdrs = getattr(resp, "headers", None) or {}
+    val = hdrs.get("Set-Cookie")
+    if isinstance(val, list):
+        return [str(x) for x in val if x]
+    if isinstance(val, str) and val:
+        return [val]
+    return []
+
+
+def apply_set_cookies(
+    cookies: dict[str, str],
+    resp: requests.Response,
+    *,
+    skip_ephemeral: bool = True,
+) -> tuple[dict[str, str], bool]:
+    """Apply ordered Set-Cookie headers onto a flat cookie dict.
+
+    Returns (updated_cookies, changed). Processes headers sequentially so a
+    delete (Max-Age=0) followed by a fresh Set-Cookie for the same name keeps
+    the new value.
+    """
+    updated = dict(cookies)
+    for sc in extract_set_cookie_headers(resp):
+        parts = [p.strip() for p in sc.split(";")]
+        nv = parts[0] if parts else ""
+        if "=" not in nv:
+            continue
+        name, value = nv.split("=", 1)
+        name = name.strip()
+        if not name:
+            continue
+
+        is_delete = value == ""
+        for attr in parts[1:]:
+            low = attr.lower()
+            if low.startswith("max-age="):
+                try:
+                    if int(low.split("=", 1)[1].strip()) <= 0:
+                        is_delete = True
+                except ValueError:
+                    pass
+
+        if skip_ephemeral and name in _EPHEMERAL_AUTH_COOKIES:
+            updated.pop(name, None)
+            continue
+        if is_delete:
+            updated.pop(name, None)
+        else:
+            updated[name] = value
+
+    return updated, updated != cookies
+
+
+def _masked_contact_matches(masked: str, label: str) -> bool:
+    """Check if a masked contact (e.g. 'd***7@h***.online') matches account label."""
+    m = (masked or "").strip().lower()
+    lbl = (label or "").strip().lower()
+    if not m or not lbl:
+        return False
+    segments = [re.escape(seg) for seg in re.split(r"\*+", m)]
+    pattern = "^" + ".*".join(segments) + "$"
+    return re.match(pattern, lbl) is not None
+
+
+def _pick_one_tap_account(saved_accounts: list[dict[str, Any]], account_label: str = "") -> dict[str, Any]:
+    """Select an eligible One-Tap saved account, preferring a masked_contact match with label."""
+    eligible = [
+        item
+        for item in saved_accounts
+        if isinstance(item, dict) and item.get("saved_account_id") and item.get("one_tap_available") is not False
+    ]
+    if not eligible:
+        raise MuseAuthError("One-Tap re-login unavailable (no eligible saved accounts)")
+    if len(eligible) > 1 and (account_label or "").strip():
+        for item in eligible:
+            if _masked_contact_matches(item.get("masked_contact") or "", account_label) or _masked_contact_matches(
+                item.get("display_label") or "", account_label
+            ):
+                return item
+    return eligible[0]
+
+
+def _read_json_safe(resp: requests.Response) -> dict[str, Any]:
+    try:
+        data = resp.json()
+        return data if isinstance(data, dict) else {}
+    except Exception:
+        return {}
+
+
+def one_tap_relogin_http(
+    cookies: dict[str, str],
+    *,
+    account_label: str = "",
+    proxy_url: str = "",
+    timeout: float = 25.0,
+) -> dict[str, str]:
+    """Re-authenticate an expired muse.ai session via One-Tap using __Host-hatch_one_tap."""
+    if not (cookies.get("__Host-hatch_one_tap") or "").strip():
+        raise MuseAuthError("One-Tap re-login unavailable (missing __Host-hatch_one_tap)")
+
+    session = requests.Session()
+    proxies = requests_proxies(proxy_url)
+    if proxies:
+        session.proxies = proxies
+    for k, v in cookies.items():
+        session.cookies.set(k, v, domain="muse.ai", path="/")
+
+    merged = dict(cookies)
+    base_headers = {
+        "User-Agent": USER_AGENT,
+        "Origin": "https://muse.ai",
+        "Referer": "https://muse.ai/",
+        "Content-Type": "application/json",
+        "Accept": "*/*",
+        "sec-fetch-site": "same-origin",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-dest": "empty",
+    }
+
+    # Step 1: restart native auth flow
+    r1 = session.post(
+        "https://muse.ai/api/auth/native/restart",
+        headers=base_headers,
+        data="{}",
+        timeout=timeout,
+        allow_redirects=False,
+    )
+    if not r1.ok:
+        raise MuseAuthError(f"One-Tap restart failed (HTTP {r1.status_code})")
+    merged, _ = apply_set_cookies(merged, r1, skip_ephemeral=True)
+    j1 = _read_json_safe(r1)
+    csrf_token = j1.get("csrf_token")
+    if not isinstance(csrf_token, str) or not csrf_token:
+        raise MuseAuthError("One-Tap restart did not return csrf_token")
+
+    csrf_headers = {**base_headers, "X-Hatch-CSRF-Token": csrf_token}
+
+    # Step 2: start flow when flow_state == "new"
+    if j1.get("flow_state") == "new":
+        r2 = session.post(
+            "https://muse.ai/api/auth/native/start",
+            headers=csrf_headers,
+            data="{}",
+            timeout=timeout,
+            allow_redirects=False,
+        )
+        if not r2.ok:
+            raise MuseAuthError(f"One-Tap start failed (HTTP {r2.status_code})")
+        merged, _ = apply_set_cookies(merged, r2, skip_ephemeral=True)
+        j2 = _read_json_safe(r2)
+    else:
+        j2 = {}
+
+    # Step 3: get saved accounts
+    saved_accounts = j1.get("saved_accounts")
+    if not isinstance(saved_accounts, list) or not saved_accounts:
+        saved_accounts = j2.get("saved_accounts")
+    if not isinstance(saved_accounts, list) or not saved_accounts:
+        r3 = session.post(
+            "https://muse.ai/api/auth/native/saved-accounts",
+            headers=csrf_headers,
+            data="{}",
+            timeout=timeout,
+            allow_redirects=False,
+        )
+        if not r3.ok:
+            raise MuseAuthError(f"One-Tap saved-accounts failed (HTTP {r3.status_code})")
+        merged, _ = apply_set_cookies(merged, r3, skip_ephemeral=True)
+        j3 = _read_json_safe(r3)
+        saved_accounts = j3.get("saved_accounts") or []
+
+    target = _pick_one_tap_account(saved_accounts if isinstance(saved_accounts, list) else [], account_label=account_label)
+
+    # Step 4: perform one-tap-login
+    r4 = session.post(
+        "https://muse.ai/api/auth/native/one-tap-login",
+        headers=csrf_headers,
+        json={
+            "saved_account_id": target["saved_account_id"],
+            "return_to": "/",
+            "security_key_related_origins": False,
+        },
+        timeout=timeout,
+        allow_redirects=False,
+    )
+    j4 = _read_json_safe(r4)
+    if r4.status_code == 403:
+        if j4.get("type") == "checkpointRequired":
+            raise MuseAuthError("One-Tap login requires checkpoint verification")
+        detail = j4.get("detail") or j4.get("type") or "forbidden"
+        raise MuseAuthError(f"One-Tap login HTTP 403 ({detail})")
+    if r4.status_code not in (200, 301, 302, 303, 307, 308):
+        detail = j4.get("detail") or j4.get("type") or r4.text[:150]
+        raise MuseAuthError(f"One-Tap login HTTP {r4.status_code}: {detail}")
+
+    if r4.status_code == 200 and j4:
+        if j4.get("one_tap") == "unavailable":
+            raise MuseAuthError(f"One-Tap unavailable ({j4.get('reason') or 'unknown'})")
+        if j4.get("reactivation_required") is True:
+            raise MuseAuthError("One-Tap login requires account reactivation")
+        if j4.get("registration_state") == "two_factor_required":
+            raise MuseAuthError("One-Tap login requires two-factor authentication")
+
+    merged, _ = apply_set_cookies(merged, r4, skip_ephemeral=True)
+
+    if r4.status_code in (301, 302, 303, 307, 308):
+        loc = (r4.headers.get("Location") or "").strip()
+        if loc.startswith("/") or loc.startswith("https://muse.ai/"):
+            next_url = loc if loc.startswith("http") else f"https://muse.ai{loc}"
+            r_red = session.get(
+                next_url,
+                headers={"User-Agent": USER_AGENT},
+                timeout=timeout,
+                allow_redirects=False,
+            )
+            merged, _ = apply_set_cookies(merged, r_red, skip_ephemeral=True)
+
+    if not (merged.get("hatch_sess") or "").strip():
+        raise MuseAuthError("One-Tap login did not issue hatch_sess")
+
+    for k in _EPHEMERAL_AUTH_COOKIES:
+        merged.pop(k, None)
+    return merged
+
+
+def check_auth_session_http(
+    cookies: dict[str, str],
+    proxy_url: str = "",
+    timeout: float = 20.0,
+) -> tuple[dict[str, Any], dict[str, str], bool]:
+    """Proactively validate & slide-renew hatch_sess/hatch_gw via POST /api/auth/check."""
+    headers = {
+        "Cookie": cookies_to_header(cookies),
+        "User-Agent": USER_AGENT,
+        "Origin": "https://muse.ai",
+        "Referer": "https://muse.ai/",
+        "Content-Type": "application/json",
+        "Accept": "application/json",
+        "sec-fetch-site": "same-origin",
+        "sec-fetch-mode": "cors",
+        "sec-fetch-dest": "empty",
+    }
+    r = requests.post(
+        "https://muse.ai/api/auth/check",
+        headers=headers,
+        data="{}",
+        proxies=requests_proxies(proxy_url),
+        timeout=timeout,
+        allow_redirects=False,
+    )
+    if r.status_code == 401:
+        raise MuseAuthError("Session expired (/api/auth/check HTTP 401)")
+    if r.status_code == 403:
+        j = _read_json_safe(r)
+        if j.get("type") == "checkpointRequired":
+            raise MuseAuthError("Checkpoint required (/api/auth/check HTTP 403)")
+        raise MuseAuthError("/api/auth/check HTTP 403")
+    if r.status_code != 200:
+        raise MuseWSSError(f"/api/auth/check HTTP {r.status_code}")
+
+    data = _read_json_safe(r)
+    if data.get("ok") is not True:
+        raise MuseAuthError(f"/api/auth/check failed (outcome={data.get('outcome')!r})")
+
+    merged, changed = apply_set_cookies(cookies, r, skip_ephemeral=True)
+    return data, merged, changed
+
+
+def renew_session_http(
+    cookies: dict[str, str],
+    proxy_url: str = "",
+    timeout: float = 20.0,
+    *,
+    out_cookies: dict[str, str] | None = None,
+) -> dict[str, Any]:
     """Call muse.ai/api/session and wake VM if sleeping."""
     headers = {
         "Cookie": cookies_to_header(cookies),
@@ -299,11 +597,16 @@ def renew_session_http(cookies: dict[str, str], proxy_url: str = "", timeout: fl
     if data.get("status") != "assigned":
         raise MuseAuthError(f"/api/session status={data.get('status')!r}")
 
+    merged, changed = apply_set_cookies(cookies, r, skip_ephemeral=True)
+    if out_cookies is not None and changed:
+        out_cookies.clear()
+        out_cookies.update(merged)
+
     vm_state = data.get("vm_state", "")
     vm_id = data.get("vm_id") or ""
     if vm_id and vm_state and vm_state.upper() != "RUNNING":
         try:
-            wake_vm_http(cookies, vm_id, proxy_url=proxy_url, retry_count=0, timeout=timeout)
+            wake_vm_http(merged, vm_id, proxy_url=proxy_url, retry_count=0, timeout=timeout)
         except Exception:
             pass
     return data

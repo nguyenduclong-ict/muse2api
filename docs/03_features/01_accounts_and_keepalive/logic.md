@@ -79,11 +79,13 @@ sequenceDiagram
 - **Cookie Parser:** Hỗ trợ 2 định dạng:
   1. JSON array/dict (`[{"name": ..., "value": ...}]` hoặc `{"hatch_sess": "..."}`).
   2. Raw `Cookie:` header string (`k1=v1; k2=v2; ...`), tách theo `;`, giữ nguyên giá trị chứa `=`.
-- **Keep-Alive Scheduler (chu kỳ 20 phút):**
-  1. Query `SELECT * FROM accounts WHERE enabled = 1`.
-  2. Với mỗi tài khoản: gọi `GET https://muse.ai/api/session` qua proxy của tài khoản (nếu có).
-  3. Nếu HTTP `401`: đánh dấu `status = 'expired'`, ghi `keepalive_logs`.
-  4. Nếu `vm_state != 'RUNNING'`: gọi `POST https://muse.ai/api/hatch/vm/wake`, cập nhật `last_keepalive_at`, ghi `keepalive_logs`.
+- **Keep-Alive Scheduler (chu kỳ 20 phút), Gia hạn chủ động & Auto One-Tap Re-login:**
+  1. `run_due()` chỉ quét tài khoản `enabled = 1` và `status` không thuộc `("resetting", "expired")`, có `now - last_keepalive_at >= interval_s`.
+  2. Với mỗi tài khoản: gọi `GET https://muse.ai/api/session` qua proxy của tài khoản (nếu có); áp dụng `Set-Cookie` trả về (ví dụ `hatch_vml` xoay vòng) và lưu lại `cookies_json` nếu thay đổi.
+  3. **Gia hạn trượt chủ động (`POST /api/auth/check`):** Sau khi `/api/session` trả `200`, nếu là Refresh thủ công hoặc đã qua `6 giờ` kể từ lần kiểm tra trước (`auth_check_interval_s = 21600`), gọi `POST https://muse.ai/api/auth/check` để xin gia hạn `hatch_sess` (30 ngày) và `hatch_gw` (1 năm) mới qua `Set-Cookie` mà không đụng tới `__Host-hatch_one_tap`.
+  4. Nếu HTTP `401` (hoặc `WSSPool.get_client` / `test_account` gặp `MuseAuthError`) và tài khoản còn `__Host-hatch_one_tap`: tự động chạy chuỗi One-Tap re-login (`POST /api/auth/native/restart` → `/start` nếu `flow_state == "new"` → `/saved-accounts` → `/one-tap-login`), **lưu ngay** `hatch_sess` và `__Host-hatch_one_tap` (nonce mới) vào `cookies_json` trước khi gọi lại `/api/session`, rồi đặt `status = 'healthy'`.
+  5. Nếu không có `__Host-hatch_one_tap` hoặc One-Tap thất bại (checkpoint/2FA/unavailable): đánh dấu `status = 'expired'` (hoặc `'cooldown'` nếu lỗi mạng tạm thời), luôn cập nhật `last_keepalive_at = now`, ghi `keepalive_logs`.
+  6. Nếu `vm_state != 'RUNNING'`: gọi `POST https://muse.ai/api/hatch/vm/wake`, cập nhật `last_keepalive_at`, ghi `keepalive_logs`.
 - **Chuẩn hóa, Validate & Migration `supported_models` (`FR-013`, `BR-005`):**
   - Tập hằng số chuẩn: `SUPPORTED_MODEL_TYPES = ("chat", "image", "video", "speech")`.
   - **Migration SQLite (`Database.init_schema`):** Kiểm tra `PRAGMA table_info(accounts)`; nếu chưa có cột `supported_models_json`, chạy `ALTER TABLE accounts ADD COLUMN supported_models_json TEXT NOT NULL DEFAULT '["chat","image","video","speech"]'`. Khi đọc bản ghi cũ hoặc cột rỗng/lỗi JSON, fallback về `["chat", "image", "video", "speech"]`.

@@ -9,7 +9,7 @@ import secrets
 import threading
 import time
 import uuid
-from typing import Any, Iterator
+from typing import Any, Callable, Iterator
 
 from config import Config
 from db import Database, parse_supported_models
@@ -88,6 +88,20 @@ class WSSPool:
         self._in_flight: dict[str, int] = {}
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._reauth_fn: Callable[[str], dict[str, Any]] | None = None
+
+    def set_reauth_callback(self, fn: Callable[[str], dict[str, Any]] | None) -> None:
+        self._reauth_fn = fn
+
+    def _try_reauth(self, account_id: str) -> bool:
+        if self._reauth_fn is None:
+            return False
+        try:
+            res = self._reauth_fn(account_id)
+            return isinstance(res, dict) and res.get("ok") is True
+        except Exception as exc:
+            logger.warning("One-Tap re-auth callback failed for %s: %s", account_id, exc)
+            return False
 
     def in_flight_count(self, account_id: str) -> int:
         with self._lock:
@@ -166,7 +180,21 @@ class WSSPool:
 
             cookies = json.loads(acc["cookies_json"])
             client = MuseWSSClient(cookies=cookies, proxy_url=acc.get("effective_proxy_url") or "")
-            client.connect(timeout=25.0)
+            try:
+                client.connect(timeout=25.0)
+            except MuseAuthError:
+                if not self._try_reauth(account_id):
+                    raise
+                acc = self.db.get_account(account_id)
+                if not acc:
+                    raise MuseWSSError(f"Account {account_id} not found")
+                if not acc["enabled"]:
+                    raise MuseWSSError(f"Account {account_id} is disabled")
+                if acc.get("status") == "resetting":
+                    raise MuseWSSError(f"Account {account_id} is currently resetting")
+                cookies = json.loads(acc["cookies_json"])
+                client = MuseWSSClient(cookies=cookies, proxy_url=acc.get("effective_proxy_url") or "")
+                client.connect(timeout=25.0)
             with self._lock:
                 self._clients[account_id] = client
             return client
@@ -180,7 +208,17 @@ class WSSPool:
                 raise MuseWSSError("Account not found")
             cookies = json.loads(acc["cookies_json"])
             client = MuseWSSClient(cookies=cookies, proxy_url=acc.get("effective_proxy_url") or "")
-            client.connect(timeout=25.0)
+            try:
+                client.connect(timeout=25.0)
+            except MuseAuthError:
+                if not self._try_reauth(account_id):
+                    raise
+                acc = self.db.get_account(account_id)
+                if not acc:
+                    raise MuseWSSError("Account not found")
+                cookies = json.loads(acc["cookies_json"])
+                client = MuseWSSClient(cookies=cookies, proxy_url=acc.get("effective_proxy_url") or "")
+                client.connect(timeout=25.0)
             status, _ = client.request("GET", "/health", timeout=15.0)
             if status != 200:
                 client.close()
