@@ -20,9 +20,11 @@ sequenceDiagram
     opt Audio TTS (/v1/audio/speech)
         API->>API: preprocess_speech_text() + build Fast CLI prompt (tts-<task_id>.<ext>)
     end
-    API->>Pool: ensure_candidate(capability) / acquire_healthy_account(capability)
-    alt Không có tài khoản hỗ trợ / hết quota
-        Pool-->>API: NoCandidateError(503)
+    API->>Pool: wait_for_candidate(capability) / ensure_candidate_or_resetting(capability)
+    alt Có account hỗ trợ đang resetting (Sync/SSE/Preview)
+        Pool->>Pool: Wait on _reset_cond (max 150s, instant wakeup on end_reset)
+    else Không có tài khoản hỗ trợ / hết quota / hết hạn chờ
+        Pool-->>API: NoCandidateAccountError (503)
         API-->>App: 503 Service Unavailable (JSON error)
     end
     Pool->>VM: Stream N: POST /chat/stream (items, session_id)
@@ -66,21 +68,36 @@ sequenceDiagram
    - Kiểm tra scheme chỉ cho phép `http`/`https` (hoặc local file nếu `MUSE2API_REF_IMAGE_LOCAL_FILES=1`).
    - Phân giải DNS (`socket.getaddrinfo`) và kiểm tra mọi IP không thuộc `is_private`, `is_loopback`, `is_link_local`, `is_reserved`, `is_multicast` (trừ khi `MUSE2API_REF_IMAGE_PRIVATE_FETCH=1`).
    - Tắt redirect tự động (`allow_redirects=False`) hoặc kiểm tra lại IP ở mỗi hop; giới hạn tối đa 40 MiB/item và 100 MiB tổng.
-2. **LRU, Lọc theo `supported_models` & Fail-Fast `503` (`FR-105`, `BR-111`):**
+2. **LRU, Lọc theo `supported_models`, Fail-Fast `503` & Giữ/Chờ khi Reset (`FR-105`, `BR-111`, `BR-112`):**
    - Ánh xạ `capability` từ loại lời gọi trong `WSSPool`:
      - `execute_chat` / `stream_chat_events` → `capability = "chat"`
      - `generate_media(..., expect_kind="image")` → `capability = "image"`
      - `generate_media(..., expect_kind="video")` → `capability = "video"`
      - `generate_media(..., expect_kind="audio")` → `capability = "speech"`
-   - `_candidate_accounts(capability)`: lọc `enabled = 1`, `status in ('healthy', 'unknown', 'cooldown')`, `not is_quota_exhausted(quota_json)` và `capability in parse_supported_models(supported_models_json)`. Sắp xếp ưu tiên `status == 'healthy'` trước, sau đó tăng dần theo `last_used_at`.
+   - `_candidate_accounts(capability)`: lọc `enabled = 1`, `status in ('healthy', 'unknown', 'cooldown')`, `id not in _resetting_accounts`, `not is_quota_exhausted(quota_json)` và `capability in parse_supported_models(supported_models_json)`. Sắp xếp ưu tiên `status == 'healthy'` trước, sau đó tăng dần theo `last_used_at`.
+   - `has_resetting_account(capability) -> bool`: kiểm tra xem có tài khoản nào thỏa `enabled = 1`, `not is_quota_exhausted(quota_json)`, `capability in parse_supported_models(supported_models_json)` và (`status == 'resetting'` hoặc `id in _resetting_accounts`) hay không.
    - `_no_candidate_error(capability)`:
      1. Lấy danh sách `enabled` có chứa `capability` trong `supported_models` (`matching_enabled`).
      2. Nếu `matching_enabled` rỗng → `"No enabled accounts support '<capability>'"`.
      3. Nếu toàn bộ `matching_enabled` đều hết quota (`is_quota_exhausted`) → `"All enabled accounts supporting '<capability>' have exhausted their quota"`.
      4. Ngược lại → `"No healthy enabled accounts available for '<capability>'"`.
-   - **Kiểm tra Fail-Fast trên router `v1_openai.py`:** Định nghĩa ngoại lệ riêng `NoCandidateAccountError(MuseWSSError)` và hàm `pool.ensure_candidate(capability)`:
-     - Trước khi mở `StreamingResponse` (ở `/v1/chat/completions`, `/v1/responses`), trước khi tạo task `queued` và spawn background thread (ở `/v1/videos`, `/v1/videos/generations`, `/v1/images/tasks`, `async=true` trên `/v1/images/generations` & `/v1/images/edits`), và trong nhánh sync (`/v1/chat/completions`, `/v1/responses`, `/v1/images/*`, `/v1/audio/speech`), gọi `pool.ensure_candidate(capability)` (hoặc bắt `NoCandidateAccountError`) để trả ngay `HTTPException(status_code=503, detail={"error": {"message": ..., "type": "service_unavailable_error"}})` mà không tạo task rác.
-   - Nếu `POST /chat/stream` lỗi `401`/timeout trước khi trả chunk đầu tiên, đánh dấu tài khoản và retry sang tài khoản hợp lệ kế tiếp trong cùng tập `candidates`.
+   - **Cơ chế giữ & chờ trên `WSSPool` (`wait_for_candidate` & `ensure_candidate_or_resetting`):**
+     - `ensure_candidate_or_resetting(capability) -> None`: dùng cho nhóm **Async Tasks** (`POST /v1/videos*`, `POST /v1/images/tasks`, `async=true` trên `/v1/images/*`). Nếu `_candidate_accounts(capability)` không rỗng thì cho qua ngay; nếu rỗng nhưng `has_resetting_account(capability)` là `True` và `cfg.reset_wait_timeout_seconds > 0` thì vẫn cho phép tạo task `status="queued"` và trả `200`; ngược lại ném `NoCandidateAccountError` → `503`.
+     - `wait_for_candidate(capability, timeout: float | None = None) -> list[dict[str, Any]]`:
+       1. Nếu `_candidate_accounts(capability)` không rỗng, trả về ngay.
+       2. Tính `effective_wait = min(cfg.reset_wait_timeout_seconds, timeout)` nếu `timeout` dương, ngược lại dùng `cfg.reset_wait_timeout_seconds`. Nếu `effective_wait <= 0` hoặc `not has_resetting_account(capability)`, ném `NoCandidateAccountError` ngay.
+       3. Dưới `self._lock`: kiểm tra `self._waiters_count >= cfg.reset_max_waiters`; nếu vượt ngưỡng, ném `NoCandidateAccountError("Too many requests waiting for account reset")` (`503`). Tăng `self._waiters_count += 1` trong `try/finally`.
+       4. Trong vòng `while`: chờ trên `self._reset_cond.wait(timeout=min(1.0, remaining))` (được đánh thức tức thì khi `end_reset()` gọi `notify_all()`). Mỗi lần tỉnh dậy kiểm tra lại `_candidate_accounts(capability)` — có ứng viên thì trả về ngay; nếu `not self.has_resetting_account(capability)` hoặc hết `deadline` hoặc `self._stop.is_set()`, thoát sớm và ném `NoCandidateAccountError`.
+     - **Router & Async Worker:**
+       - Nhóm **Sync / SSE / Voice Preview** (`/v1/chat/completions`, `/v1/responses`, `/v1/images/generations` & `/v1/images/edits` với `async=false`, `/v1/audio/speech`, `/v1/audio/voices/{id}/preview`): gọi `pool.wait_for_candidate(capability, timeout=...)` trước khi mở `StreamingResponse` hoặc tạo task `running`. Trên các route `async def` (`images_edits`, `create_speech`, `preview_voice`), bắt buộc bọc qua `await run_in_threadpool(...)` để không khóa event loop.
+       - Nhóm **Async Tasks**: `_run_async_media` giữ task ở trạng thái `"queued"`, gọi `pool.generate_media(...)` (bên trong tự chờ qua `wait_for_candidate`), cập nhật `status="running"` trong callback `on_account_selected` khi đã lấy được tài khoản, hoặc đánh dấu `"failed"` nếu ném `NoCandidateAccountError` / lỗi thực thi.
+   - **Xử lý `AccountResettingError` & Chờ lại khi race giữa chừng:**
+     - Định nghĩa `AccountResettingError(MuseWSSError)`. Trong `execute_chat`, `stream_chat_events` và `generate_media`, nếu `_track_in_flight(aid)` hoặc `get_client(aid)` ném `AccountResettingError`: bỏ qua `aid` sang ứng viên kế tiếp (không gọi `close_account(aid)`, không đặt `status="cooldown"`).
+     - Nếu duyệt hết `candidates` trong lượt hiện tại mà vẫn chưa gửi chunk nào ra client và vẫn `has_resetting_account(capability)` (còn ngân sách thời gian chờ), gọi lại `wait_for_candidate(capability, timeout=remaining)` để lấy danh sách ứng viên mới sau reset.
+     - Nếu `POST /chat/stream` lỗi `401`/timeout trước khi trả chunk đầu tiên, đánh dấu tài khoản và retry sang tài khoản hợp lệ kế tiếp trong cùng tập `candidates`.
+   - **Cấu hình biến môi trường (`packages/backend/config.py` & `.env.example`):**
+     - `MUSE2API_RESET_WAIT_TIMEOUT_SECONDS`: mặc định `"150"` (`float >= 0`, `0` = tắt chờ).
+     - `MUSE2API_RESET_MAX_WAITERS`: mặc định `"50"` (`int >= 1`, giới hạn waiter đồng thời).
 3. **SSE Format cho `/v1/responses`:**
    - Bắn lần lượt `event: response.created`, các `event: response.output_text.delta` theo `delta` từ `chat.subscribe`, và `event: response.completed` kèm full output.
 4. **Danh mục Giọng, Lọc Ngôn ngữ Settings & Phân giải `voice` (`BR-106`, `BR-109`, `BR-110`):**

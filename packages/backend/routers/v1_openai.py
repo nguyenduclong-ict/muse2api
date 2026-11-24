@@ -43,15 +43,30 @@ logger = logging.getLogger(__name__)
 router = APIRouter(prefix="/v1", tags=["v1"])
 
 
-def _ensure_capability_or_503(pool: Any, capability: str) -> None:
-    if hasattr(pool, "ensure_candidate"):
-        try:
+def _wait_capability_or_503(pool: Any, capability: str, timeout: float | None = None) -> None:
+    try:
+        if hasattr(pool, "wait_for_candidate"):
+            pool.wait_for_candidate(capability, timeout=timeout)
+        elif hasattr(pool, "ensure_candidate"):
             pool.ensure_candidate(capability)
-        except NoCandidateAccountError as exc:
-            raise HTTPException(
-                status_code=503,
-                detail={"error": {"message": str(exc), "type": "service_unavailable_error"}},
-            )
+    except NoCandidateAccountError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"error": {"message": str(exc), "type": "service_unavailable_error"}},
+        )
+
+
+def _ensure_async_capability_or_503(pool: Any, capability: str) -> None:
+    try:
+        if hasattr(pool, "ensure_candidate_or_resetting"):
+            pool.ensure_candidate_or_resetting(capability)
+        elif hasattr(pool, "ensure_candidate"):
+            pool.ensure_candidate(capability)
+    except NoCandidateAccountError as exc:
+        raise HTTPException(
+            status_code=503,
+            detail={"error": {"message": str(exc), "type": "service_unavailable_error"}},
+        )
 
 _IDEMPOTENCY_MAP: dict[str, str] = {}
 _IDEMPOTENCY_LOCK = threading.Lock()
@@ -221,14 +236,15 @@ def _safe_fail_task(db: Any, task_id: str, error_message: str, latency_ms: int) 
 def _run_async_media(db, pool, task_id: str, prompt: str, expect_kind: str,
                      refs: list[tuple[bytes, str]] | None, timeout: float) -> None:
     t0 = time.time()
-    db.update_task(task_id, status="running")
     try:
         res = pool.generate_media(
             prompt,
             expect_kind=expect_kind,
             images=refs,
             timeout=timeout,
-            on_account_selected=lambda aid, sid: db.update_task(task_id, account_id=aid, session_id=sid),
+            on_account_selected=lambda aid, sid: db.update_task(
+                task_id, status="running", account_id=aid, session_id=sid
+            ),
         )
         db.update_task(
             task_id,
@@ -266,8 +282,8 @@ def chat_completions(body: ChatCompletionReq, request: Request):
     if not prompt.strip():
         raise HTTPException(status_code=400, detail={"error": {"message": "messages or prompt is required"}})
     refs = _load_refs_or_400(raw_refs, cfg)
-    _ensure_capability_or_503(pool, "chat")
     timeout = float(body.timeout or 180)
+    _wait_capability_or_503(pool, "chat", timeout=timeout)
 
     task_id = f"tsk_{secrets.token_hex(6)}"
     db.create_task(
@@ -339,8 +355,8 @@ def responses_endpoint(body: ResponsesReq, request: Request):
     prompt = f"{body.instructions.strip()}\n\n{raw_input}" if body.instructions else raw_input
     if not prompt.strip():
         raise HTTPException(status_code=400, detail={"error": {"message": "input is required"}})
-    _ensure_capability_or_503(pool, "chat")
     timeout = float(body.timeout or 180)
+    _wait_capability_or_503(pool, "chat", timeout=timeout)
 
     task_id = f"tsk_{secrets.token_hex(6)}"
     db.create_task(
@@ -411,10 +427,13 @@ def images_generations(body: ImageGenReq, request: Request):
     pool = request.app.state.wss_pool
     cfg = request.app.state.cfg
     refs = _load_refs_or_400(_collect_ref_items(body), cfg)
-    _ensure_capability_or_503(pool, "image")
+    timeout = float(body.timeout or 300)
+    if body.async_:
+        _ensure_async_capability_or_503(pool, "image")
+    else:
+        _wait_capability_or_503(pool, "image", timeout=timeout)
     ratio = body.aspect_ratio or body.size or "16:9"
     prompt = _build_media_prompt("image", body.prompt, ratio, extra=body.extra, has_refs=bool(refs))
-    timeout = float(body.timeout or 300)
     task_id = f"img_{secrets.token_hex(6)}"
     input_payload = body.model_dump(by_alias=True, exclude_none=True)
 
@@ -531,7 +550,10 @@ async def images_edits(request: Request):
         raise HTTPException(status_code=400, detail={"error": {"message": "prompt is required"}})
     if not img_tuples:
         raise HTTPException(status_code=400, detail={"error": {"message": "At least one non-empty reference media is required"}})
-    _ensure_capability_or_503(pool, "image")
+    if async_flag:
+        _ensure_async_capability_or_503(pool, "image")
+    else:
+        await run_in_threadpool(_wait_capability_or_503, pool, "image", timeout)
 
     full_prompt = _build_media_prompt("image", prompt, ratio, extra=extra, has_refs=True)
     task_id = f"img_{secrets.token_hex(6)}"
@@ -614,7 +636,7 @@ def create_image_task(
                 return {"id": existing["id"], "status": existing["status"]}
 
     refs = _load_refs_or_400(_collect_ref_items(body), cfg)
-    _ensure_capability_or_503(pool, "image")
+    _ensure_async_capability_or_503(pool, "image")
     ratio = body.aspect_ratio or body.size or "16:9"
     prompt = _build_media_prompt("image", body.prompt, ratio, extra=body.extra, has_refs=bool(refs))
     timeout = float(body.timeout or 300)
@@ -662,7 +684,7 @@ def create_video_task(body: VideoGenReq, request: Request):
     pool = request.app.state.wss_pool
     cfg = request.app.state.cfg
     refs = _load_refs_or_400(_collect_ref_items(body), cfg)
-    _ensure_capability_or_503(pool, "video")
+    _ensure_async_capability_or_503(pool, "video")
     ratio = body.aspect_ratio or body.size or "16:9"
     prompt = _build_media_prompt(
         "video", body.prompt, ratio, duration=body.duration, resolution=body.resolution, extra=body.extra, has_refs=bool(refs)
@@ -890,9 +912,8 @@ async def create_speech(body: SpeechReq, request: Request):
             },
         )
 
-    _ensure_capability_or_503(pool, "speech")
-
     timeout = float(body.timeout or 180)
+    await run_in_threadpool(_wait_capability_or_503, pool, "speech", timeout)
     task_id = f"aud_{secrets.token_hex(6)}"
     target_fmt = "wav" if fmt == "wav" else "mp3"
     output_filename = f"tts-{task_id}.{target_fmt}"

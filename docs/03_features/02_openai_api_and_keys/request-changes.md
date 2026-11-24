@@ -1,5 +1,15 @@
 # Request changes: OpenAI-Compatible API (`/v1/*`) & API Key
 
+## 2026-11-25 — Giữ & Chờ Request `/v1/*` khi Tài khoản hỗ trợ Capability đang Reset
+
+- **Yêu cầu:** Bổ sung cơ chế giữ và chờ các request `/v1/*` khi không có tài khoản ứng viên tức thì nhưng có tài khoản hỗ trợ capability đang trong quá trình `resetting`, thay vì trả ngay `503` làm gián đoạn dịch vụ.
+- **Phân loại:** Feature mở rộng
+- **Đặc tả thay đổi:**
+  - `spec.md`: cập nhật `FR-105`, `BR-111`; bổ sung `BR-112`, `AC-118`, `AC-119`, `AC-120`.
+  - `logic.md`: cập nhật Sequence Diagram mục `1` và Mục `3.2` (`wait_for_candidate`, `ensure_candidate_or_resetting`, `has_resetting_account`, `AccountResettingError`, bảo vệ `_waiters_count`, tách luồng Sync/SSE vs Async Tasks và cấu hình `.env`).
+- **Quyết định:** Chỉ kích hoạt chờ khi có ít nhất 1 tài khoản `enabled=true`, chưa hết quota, hỗ trợ `capability` đang `resetting` (mọi trường hợp hết quota/`expired`/không hỗ trợ vẫn fail-fast `503`); tách 2 luồng xử lý để nhóm Async Tasks trả `queued` ngay và chờ trong worker nền, còn nhóm Sync/SSE/Voice Preview chờ tại tầng `WSSPool` (dùng `run_in_threadpool` trên route `async def`); cấu hình `MUSE2API_RESET_WAIT_TIMEOUT_SECONDS=150` và `MUSE2API_RESET_MAX_WAITERS=50` qua `.env` (không thêm UI Settings) kèm thoát sớm `503` khi tất cả tiến trình reset kết thúc thất bại.
+- **Task:** [T-020](../../04_tasks/020_reset_guard_and_request_wait/plan.md)
+
 ## 2026-11-20 — Tối ưu tốc độ tạo voice (Fast CLI Prompt, chuyển đổi tag cục bộ) & Chuẩn hóa âm lượng tại local (`ffmpeg` 2-pass `loudnorm`)
 
 - **Yêu cầu:** Tối ưu thời gian tạo voice TTS (giảm ~20s đọc skill trên Muse agent) bằng Fast Prompt chạy trực tiếp lệnh `/opt/hatch/bin/tts speak ... --text-stdin`, tiền xử lý bracket tags ở backend, và chuyển bước chuẩn hóa âm lượng (`-16 LUFS`, true peak `-1.5 dB`) về xử lý cục bộ bằng `ffmpeg`.

@@ -389,7 +389,9 @@ class VoicePreviewService:
                     "bytes": os.path.getsize(dst_path),
                 }
 
-            if hasattr(self.pool, "ensure_candidate"):
+            if hasattr(self.pool, "wait_for_candidate"):
+                self.pool.wait_for_candidate("speech", timeout=timeout)
+            elif hasattr(self.pool, "ensure_candidate"):
                 self.pool.ensure_candidate("speech")
 
             task_id = f"aud_prev_{secrets.token_hex(4)}"

@@ -7,6 +7,7 @@ import os
 import sqlite3
 import sys
 import tempfile
+import threading
 import time
 import unittest
 from unittest.mock import MagicMock, patch
@@ -21,7 +22,7 @@ from main import app
 from muse_wss import MuseAuthError
 from services.keepalive import KeepAliveService
 from services.reset_service import ResetService
-from services.wss_pool import WSSPool
+from services.wss_pool import AccountResettingError, NoCandidateAccountError, WSSPool
 
 
 async def call_asgi(
@@ -313,8 +314,164 @@ class TestMuseResetAndAutoReset(unittest.TestCase):
         with patch("services.reset_service.fetch_live_session_http") as m_sess_unused:
             res_single = self.reset_service.run_due()
             self.assertEqual(res_single["triggered"], [])
-            self.assertEqual(res_single["skipped"][0]["reason"], "insufficient_healthy_pool")
+            self.assertTrue(
+                any(
+                    s.get("account_id") == "acc_due" and s.get("reason") == "insufficient_healthy_pool"
+                    for s in res_single["skipped"]
+                ),
+                res_single["skipped"],
+            )
             m_sess_unused.assert_not_called()
+
+    def test_ac020_per_capability_pool_guard_for_auto_reset(self):
+        self.db.update_setting("auto_reset", {"enabled": True, "interval_minutes": 60})
+        old_ts = time.time() - 7200
+
+        # Account A supports ["chat", "speech"] -> speech only has 1 healthy account -> postpone
+        self.db.create_account(
+            "acc_a", "multi-cap", {"hatch_sess": "a"},
+            status="healthy", supported_models=["chat", "speech"], auto_reset=True,
+        )
+        self.db.update_account("acc_a", last_reset_at=old_ts, requests_since_reset=3)
+
+        # Account B supports ["chat"] -> chat has 2 healthy accounts -> eligible
+        self.db.create_account(
+            "acc_b", "chat-only", {"hatch_sess": "b"},
+            status="healthy", supported_models=["chat"], auto_reset=True,
+        )
+        self.db.update_account("acc_b", last_reset_at=old_ts, requests_since_reset=3)
+
+        fake_client = MagicMock()
+        fake_client.vm_name = "vm-new-b"
+        fake_client.is_connected = True
+        fake_client.request.return_value = (200, b"ok")
+
+        with patch("services.reset_service.fetch_live_session_http") as m_sess, \
+             patch("services.reset_service.replace_vm_http") as m_rep, \
+             patch("services.reset_service.sync_vm_selection_best_effort", return_value=True), \
+             patch("services.reset_service.MuseWSSClient", return_value=fake_client):
+            m_sess.return_value = {
+                "status": "assigned", "vm_id": "vm-old-b", "vm_type": "hatch_vm", "vm_selection": {"revision": 1},
+            }
+            m_rep.return_value = {"ok": True, "vmId": "vm-new-b", "releasedOld": True}
+
+            res = self.reset_service.run_due()
+            self.assertEqual([r["account_id"] for r in res["triggered"]], ["acc_b"])
+            self.assertEqual(self.db.get_account("acc_b")["requests_since_reset"], 0)
+            self.assertEqual(self.db.get_account("acc_a")["requests_since_reset"], 3)
+            self.assertTrue(
+                any(
+                    s.get("account_id") == "acc_a"
+                    and s.get("reason") == "insufficient_healthy_pool"
+                    and s.get("detail") == "insufficient_healthy_pool:speech"
+                    for s in res["skipped"]
+                ),
+                res["skipped"],
+            )
+
+    def test_ac021_atomic_reservation_drain_and_instant_notify(self):
+        self.db.create_account("acc_1", "acc-01", {"hatch_sess": "1"}, status="healthy", supported_models=["chat"])
+
+        # 1. Request wins _track_in_flight -> auto-reset begin_reset(require_idle=True) fails
+        with self.wss_pool._track_in_flight("acc_1"):
+            self.assertFalse(self.wss_pool.begin_reset("acc_1", require_idle=True))
+            self.assertFalse(self.wss_pool.is_resetting("acc_1"))
+            res_skip = self.reset_service._execute_reset("acc_1", "auto")
+            self.assertTrue(res_skip.get("skipped"))
+            self.assertEqual(self.db.get_account("acc_1")["status"], "healthy")
+
+        # 2. Reset wins begin_reset -> _track_in_flight & get_client raise AccountResettingError
+        self.assertTrue(self.wss_pool.begin_reset("acc_1", require_idle=True))
+        self.assertTrue(self.wss_pool.is_resetting("acc_1"))
+        self.assertEqual(self.wss_pool._candidate_accounts("chat"), [])
+        with self.assertRaises(AccountResettingError):
+            with self.wss_pool._track_in_flight("acc_1"):
+                pass
+        with self.assertRaises(AccountResettingError):
+            self.wss_pool.get_client("acc_1")
+        self.wss_pool.end_reset("acc_1")
+        self.assertFalse(self.wss_pool.is_resetting("acc_1"))
+
+        # 3. wait_for_in_flight_drain wakes immediately when in_flight drops to 0
+        entered = threading.Event()
+        def _hold_in_flight():
+            with self.wss_pool._track_in_flight("acc_1"):
+                entered.set()
+                time.sleep(0.05)
+
+        t_hold = threading.Thread(target=_hold_in_flight)
+        t_hold.start()
+        entered.wait(timeout=1.0)
+        t0 = time.time()
+        drained = self.wss_pool.wait_for_in_flight_drain("acc_1", timeout=2.0)
+        t_hold.join(timeout=1.0)
+        self.assertTrue(drained)
+        self.assertLess(time.time() - t0, 0.5)
+
+        # 4. wait_for_candidate wakes immediately when DB status is updated before end_reset
+        self.wss_pool.begin_reset("acc_1", require_idle=False)
+        self.db.update_account("acc_1", status="resetting")
+        self.wss_pool.ensure_candidate_or_resetting("chat")
+
+        wait_result: dict = {}
+        def _waiter():
+            try:
+                wait_result["cands"] = self.wss_pool.wait_for_candidate("chat", timeout=5.0)
+            except Exception as exc:
+                wait_result["err"] = exc
+
+        t_wait = threading.Thread(target=_waiter)
+        t_wait.start()
+        time.sleep(0.05)
+        self.db.update_account("acc_1", status="healthy")
+        t_notify = time.time()
+        self.wss_pool.end_reset("acc_1")
+        t_wait.join(timeout=1.0)
+        self.assertIn("cands", wait_result)
+        self.assertEqual([c["id"] for c in wait_result["cands"]], ["acc_1"])
+        self.assertLess(time.time() - t_notify, 0.5)
+
+        # 5. execute_chat skips AccountResettingError without cooldown or incrementing requests_since_reset
+        self.db.create_account("acc_2", "acc-02", {"hatch_sess": "2"}, status="healthy", supported_models=["chat"])
+        self.db.update_account("acc_1", last_used_at=1.0)
+        self.db.update_account("acc_2", last_used_at=2.0)
+
+        fake_client = MagicMock()
+        fake_client.is_connected = True
+        fake_client.request.side_effect = [
+            (200, b"{}"),
+            (200, json.dumps({"result": {"chat_events": [{"role": "assistant", "event_name": "message.assistant", "display_text": "hello"}]}}).encode("utf-8")),
+        ]
+        fake_client.stream_rpc.return_value = iter([(1, b'{"event":"task.status","payload":{"status":"completed"}}\n')])
+
+        orig_get_client = self.wss_pool.get_client
+        def _mock_get_client(aid: str):
+            if aid == "acc_1":
+                raise AccountResettingError("Account acc_1 is currently resetting")
+            return fake_client
+
+        with patch.object(self.wss_pool, "get_client", side_effect=_mock_get_client):
+            used_aid, _, reply = self.wss_pool.execute_chat("hi")
+        self.assertEqual(used_aid, "acc_2")
+        self.assertEqual(reply, "hello")
+        acc1_after = self.db.get_account("acc_1")
+        self.assertEqual(acc1_after["status"], "healthy")
+        self.assertEqual(acc1_after["requests_since_reset"], 0)
+        self.assertEqual(self.db.get_account("acc_2")["requests_since_reset"], 1)
+
+        # 6. reset_max_waiters guard
+        self.db.update_account("acc_1", status="resetting")
+        self.db.update_account("acc_2", status="expired")
+        self.cfg.reset_max_waiters = 1
+        with self.wss_pool._lock:
+            self.wss_pool._waiters_count = 1
+        try:
+            with self.assertRaises(NoCandidateAccountError) as ctx:
+                self.wss_pool.wait_for_candidate("chat", timeout=1.0)
+            self.assertIn("Too many requests waiting", str(ctx.exception))
+        finally:
+            with self.wss_pool._lock:
+                self.wss_pool._waiters_count = 0
 
 
 if __name__ == "__main__":

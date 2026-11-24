@@ -1,5 +1,15 @@
 # Request changes: Accounts & Keep-Alive
 
+## 2026-11-25 — Khóa nguyên tử chống race condition khi Reset & Bảo vệ Auto-Reset theo `supported_models`
+
+- **Yêu cầu:** Khắc phục khe hở race condition giữa bước kiểm tra `in_flight == 0` của `ResetService` với luồng tiếp nhận request mới trên `WSSPool`, đồng thời siết chặt quy tắc bảo vệ pool của Auto-Reset theo từng `supported_models` thay vì chỉ đếm tổng toàn pool.
+- **Phân loại:** Bug thay đổi nghiệp vụ
+- **Đặc tả thay đổi:**
+  - `spec.md`: cập nhật `BR-007`, `BR-008`; bổ sung `AC-020`, `AC-021`.
+  - `logic.md`: cập nhật Sequence Diagram `1b` và Mục `4` (bổ sung `_resetting_accounts`, `_reset_cond`, `begin_reset`, `end_reset`, `healthy_available_count(capability)`, `can_auto_reset_account`, và bất biến cập nhật DB trước khi `end_reset`).
+- **Quyết định:** Đồng bộ tập `_resetting_accounts` và bộ đếm `in_flight` dưới cùng `WSSPool._lock` để loại bỏ hoàn toàn race giữa đặt chỗ reset và điều phối request; áp dụng kiểm tra `healthy_available_count(capability) >= 2` cho mọi `capability` thuộc `supported_models` của tài khoản trước khi auto-reset (chặt theo capability, không dùng kiểm tra tổng toàn pool vì dễ làm rỗng capability riêng như `speech` hoặc `video`).
+- **Task:** [T-020](../../04_tasks/020_reset_guard_and_request_wait/plan.md)
+
 ## 2026-11-24 — Nâng cấp Chrome Extension sang Import/Export Cookie cho mọi site (v2.0.0)
 
 - **Yêu cầu:** Nâng cấp Chrome Extension (`extension/`) từ chỉ hỗ trợ `muse.ai` sang hỗ trợ Import, Export Cookie và Clear Site Data cho mọi website.

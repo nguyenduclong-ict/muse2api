@@ -102,10 +102,11 @@ class ResetService:
         acc = self.db.get_account(account_id)
         if not acc:
             raise KeyError("Account not found")
-        if acc.get("status") == "resetting":
+        if acc.get("status") == "resetting" or self.wss_pool.is_resetting(account_id):
             raise RuntimeError("Account is already resetting")
 
         prev_status = acc.get("status") or "unknown"
+        self.wss_pool.begin_reset(account_id, require_idle=False)
         updated = self.db.update_account(account_id, status="resetting", last_error="")
         t = threading.Thread(
             target=self._execute_reset,
@@ -117,12 +118,12 @@ class ResetService:
         t.start()
         return updated or acc
 
-    def _wait_for_drain(self, account_id: str) -> None:
-        deadline = time.time() + max(0.0, self.drain_timeout_s)
-        while self.wss_pool.in_flight_count(account_id) > 0 and time.time() < deadline:
-            if self._stop.is_set():
-                break
-            time.sleep(0.25)
+    def _wait_for_drain(self, account_id: str) -> bool:
+        return self.wss_pool.wait_for_in_flight_drain(
+            account_id,
+            self.drain_timeout_s,
+            stop_event=self._stop,
+        )
 
     def _verify_new_vm_wss(
         self,
@@ -168,16 +169,22 @@ class ResetService:
         t0 = time.time()
         old_vm_id = ""
         new_vm_id = ""
+        reserved = False
         try:
             acc = self.db.get_account(account_id)
             if not acc:
+                if trigger == "manual" and self.wss_pool.is_resetting(account_id):
+                    reserved = True
                 return {"ok": False, "account_id": account_id, "error": "Account not found"}
 
             if trigger == "auto":
-                if self.wss_pool.in_flight_count(account_id) > 0:
+                if not self.wss_pool.begin_reset(account_id, require_idle=True):
                     return {"ok": False, "account_id": account_id, "skipped": True, "error": "Account has in-flight requests"}
+                reserved = True
                 self.db.update_account(account_id, status="resetting", last_error="")
             else:
+                self.wss_pool.begin_reset(account_id, require_idle=False)
+                reserved = True
                 if acc.get("status") != "resetting":
                     self.db.update_account(account_id, status="resetting", last_error="")
                 self._wait_for_drain(account_id)
@@ -309,6 +316,8 @@ class ResetService:
             )
             return {"ok": False, "account_id": account_id, "status": "cooldown", "error": err_msg}
         finally:
+            if reserved:
+                self.wss_pool.end_reset(account_id)
             acc_lock.release()
 
     def _find_due_accounts(self, interval_minutes: int) -> tuple[list[dict[str, Any]], list[dict[str, Any]]]:
@@ -316,10 +325,6 @@ class ResetService:
         interval_s = max(60, int(interval_minutes)) * 60
         due: list[dict[str, Any]] = []
         skipped: list[dict[str, Any]] = []
-
-        healthy_count = self.wss_pool.healthy_available_count()
-        if healthy_count <= 1:
-            return [], [{"reason": "insufficient_healthy_pool", "healthy_count": healthy_count}]
 
         for acc in self.db.list_accounts():
             aid = acc["id"]
@@ -352,6 +357,10 @@ class ResetService:
             if now - last_reset_at < interval_s:
                 skipped.append({"account_id": aid, "reason": "not_due_yet"})
                 continue
+            ok_pool, pool_reason = self.wss_pool.can_auto_reset_account(acc)
+            if not ok_pool:
+                skipped.append({"account_id": aid, "reason": "insufficient_healthy_pool", "detail": pool_reason})
+                continue
             due.append(acc)
         return due, skipped
 
@@ -370,8 +379,9 @@ class ResetService:
                 if self._stop.is_set():
                     break
                 # Re-check pool safety before each sequential reset
-                if self.wss_pool.healthy_available_count() <= 1:
-                    skipped.append({"account_id": acc["id"], "reason": "insufficient_healthy_pool"})
+                ok_pool, pool_reason = self.wss_pool.can_auto_reset_account(acc)
+                if not ok_pool:
+                    skipped.append({"account_id": acc["id"], "reason": "insufficient_healthy_pool", "detail": pool_reason})
                     continue
                 if self.wss_pool.in_flight_count(acc["id"]) > 0:
                     skipped.append({"account_id": acc["id"], "reason": "in_flight_busy"})

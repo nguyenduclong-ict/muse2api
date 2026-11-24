@@ -121,6 +121,12 @@ class Config:
     audio_lra: float = field(
         default_factory=lambda: _env_float("MUSE2API_AUDIO_LRA", 11.0, 1.0, 50.0)
     )
+    reset_wait_timeout_seconds: float = field(
+        default_factory=lambda: _env_float("MUSE2API_RESET_WAIT_TIMEOUT_SECONDS", 150.0, 0.0)
+    )
+    reset_max_waiters: int = field(
+        default_factory=lambda: _env_int("MUSE2API_RESET_MAX_WAITERS", 50, 1)
+    )
 
     @property
     def db_path(self) -> str:

@@ -40,11 +40,12 @@ sequenceDiagram
 
     Admin->>UI: Click [Reset] → Confirm Reset Muse
     UI->>API: POST /admin/accounts/{id}/reset
+    API->>Pool: begin_reset(id, require_idle=False)
     API->>DB: UPDATE accounts SET status="resetting"
     API->>Reset: Enqueue background reset(account_id, trigger="manual")
     API-->>UI: 202 Accepted (status="resetting")
 
-    Reset->>Pool: Wait in_flight == 0 (drain max 30s) → close_account(id)
+    Reset->>Pool: Wait in_flight == 0 via _reset_cond (drain max 30s) → close_account(id)
     Reset->>Muse: GET /api/session?vm_state=live
     Muse-->>Reset: 200 (vm_type="hatch_vm", vm_id=old_vm_id)
     Reset->>Muse: POST /api/hatch/replace-vm {sourceEnvId, destinationType:"standard", intent:"reset"}
@@ -54,6 +55,7 @@ sequenceDiagram
     Pool-->>Reset: healthy (vm_name == new_vm_id)
     Reset->>DB: UPDATE accounts SET status="healthy", last_reset_at=now, last_reset_status="ok", requests_since_reset=0
     Reset->>DB: INSERT INTO reset_logs (trigger_type, status="ok", old_vm_id, new_vm_id)
+    Reset->>Pool: end_reset(id) (discard + notify_all)
     UI->>API: GET /admin/accounts (poll 5s)
     API-->>UI: status="healthy", last_reset_at, requests_since_reset=0
 ```
@@ -108,27 +110,34 @@ sequenceDiagram
    - Tạo bảng `reset_logs` (`id`, `account_id`, `trigger_type`, `status`, `old_vm_id`, `new_vm_id`, `message`, `duration_ms`, `created_at`) tách biệt khỏi `keepalive_logs`; mỗi lần `add_reset_log(...)` tự động giữ tối đa `30` bản ghi gần nhất cho mỗi `account_id`.
    - Trong `main.py:lifespan()`, gọi `db.recover_resetting_accounts()` ngay cạnh `db.fail_orphaned_tasks()` để đưa các tài khoản bị treo ở `status = "resetting"` do tắt server đột ngột về `"unknown"`.
 
-2. **Bộ đếm `in_flight` & `requests_since_reset` trên `WSSPool`:**
-   - Khi tài khoản được chọn để thực thi `/v1/*` (`execute_chat`, `stream_chat_events`, `generate_media`, `generate_speech`), tăng `in_flight[account_id] += 1` trong khối `try/finally` và gọi `db.increment_requests_since_reset(account_id)` (`UPDATE accounts SET requests_since_reset = requests_since_reset + 1 WHERE id = ?`).
-   - Tài khoản có `status == "resetting"` bị loại khỏi `_candidate_accounts()`, đồng thời bị bỏ qua trong `WSSPool.maintain_tunnels()`, `KeepAliveService.run_due()`, và `_refresh_account_full()`.
+2. **Bộ đếm `in_flight`, Khóa nguyên tử `_resetting_accounts` & `requests_since_reset` trên `WSSPool`:**
+   - Cấu trúc đồng bộ trên `WSSPool`: duy trì `_resetting_accounts: set[str]` và `_reset_cond = threading.Condition(self._lock)` dùng chung `self._lock` với `_in_flight: dict[str, int]`.
+   - Cung cấp các phương thức nguyên tử:
+     - `begin_reset(account_id: str, *, require_idle: bool = False) -> bool`: dưới `self._lock`, nếu `require_idle` là `True` và `self._in_flight.get(account_id, 0) > 0`, trả `False` ngay; ngược lại thêm `account_id` vào `_resetting_accounts` và trả `True`.
+     - `end_reset(account_id: str) -> None`: dưới `self._lock`, gỡ `account_id` khỏi `_resetting_accounts` và gọi `self._reset_cond.notify_all()` để đánh thức ngay toàn bộ các request đang chờ.
+     - `healthy_available_count(capability: str | None = None) -> int`: đếm số tài khoản thỏa `enabled == 1`, `status == "healthy"`, `id not in _resetting_accounts`, `not is_quota_exhausted(quota_json)` và (nếu truyền `capability`) có `capability` trong `parse_supported_models(supported_models_json)`.
+     - `can_auto_reset_account(acc: dict[str, Any]) -> tuple[bool, str | None]`: kiểm tra mọi `cap` trong `parse_supported_models(acc.get("supported_models_json"))` đều có `healthy_available_count(cap) >= 2` (nếu thiếu trả `(False, "insufficient_healthy_pool")`).
+   - Trong `_track_in_flight(account_id)`: dưới `self._lock`, kiểm tra `if account_id in self._resetting_accounts: raise AccountResettingError(...)` rồi mới tăng `_in_flight[account_id] += 1`. Khi thoát `finally` và `_in_flight[account_id]` giảm về `0`, gọi `self._reset_cond.notify_all()` để đánh thức tức thì luồng drain.
+   - Chỉ sau khi vào `_track_in_flight(account_id)` thành công mới gọi `get_client(account_id)` và `db.increment_requests_since_reset(account_id)`. Tài khoản có `status == "resetting"` hoặc nằm trong `_resetting_accounts` bị loại khỏi `_candidate_accounts()`, đồng thời bị bỏ qua trong `WSSPool.maintain_tunnels()`, `KeepAliveService.run_due()`, và `_refresh_account_full()`.
 
 3. **Quy trình Reset một tài khoản (`ResetService.reset_account(account_id, trigger)`):**
    - Dùng `per-account` reset lock để không chạy chồng chéo 2 tiến trình reset trên cùng 1 tài khoản.
-   - Đặt `status = "resetting"` (nếu chưa đặt).
-   - **Drain:** Nếu `trigger == "manual"`, chờ `in_flight[account_id] == 0` với timeout tối đa `30s` trước khi gọi `wss_pool.close_account(account_id)`. Nếu `trigger == "auto"` và `in_flight[account_id] > 0`, hoãn ngay lập tức (không ngắt request).
+   - **Đặt chỗ nguyên tử & Drain:**
+     - Nếu `trigger == "manual"`: gọi `wss_pool.begin_reset(account_id, require_idle=False)` và đặt DB `status = "resetting"` ngay (trước khi trả `202 Accepted`), sau đó chờ `in_flight[account_id] == 0` qua `wss_pool._reset_cond.wait(...)` với timeout tối đa `30s` trước khi gọi `wss_pool.close_account(account_id)`.
+     - Nếu `trigger == "auto"`: gọi `wss_pool.begin_reset(account_id, require_idle=True)` nguyên tử; nếu trả `False` (`in_flight > 0`), hoãn ngay lập tức mà không chạm DB `status`. Nếu trả `True`, mới cập nhật DB `status = "resetting"`.
    - **Kiểm tra VM & Gọi `replace-vm`:**
      1. Gọi `GET https://muse.ai/api/session?vm_state=live`: lấy `old_vm_id`, `vm_type`, `vm_selection.revision`. Nếu `vm_type != "hatch_vm"`, dừng và báo lỗi không hỗ trợ CVM (`hatch_cvm`).
      2. Gọi `POST https://muse.ai/api/hatch/replace-vm` với header same-origin và body `{"sourceEnvId": old_vm_id, "destinationType": "standard", "intent": "reset"}`. Kiểm tra `ok == True` và `new_vm_id`.
      3. _(Best-effort)_ Trích `ownerId` từ `GET https://muse.ai/settings` và gọi Server Action `updateUserPreferencesAction` (`next-action: 40076d65709b71539d10a9f0f52656ee03877e4d17`) để đồng bộ `vm_selection.override`.
    - **Xác minh VM mới qua WSS:**
      - Vòng lặp tối đa `120s` (nghỉ `4s`/lần): gọi `MuseWSSClient.connect()` (tự wake VM khi cần) + kiểm tra `client.vm_name == new_vm_id` + `GET /health == 200`.
-   - **Cập nhật kết quả:**
+   - **Cập nhật kết quả & Mở khóa:**
      - Thành công: cập nhật `status = "healthy"`, `last_error = ""`, `last_reset_at = now`, `last_reset_status = "ok"`, `last_reset_error = ""`, `requests_since_reset = 0`; ghi `reset_logs` (`status="ok"`, `old_vm_id`, `new_vm_id`, `duration_ms`).
      - Thất bại: giữ nguyên `requests_since_reset` và `last_reset_at`; đặt `status = "expired"` nếu `MuseAuthError` (HTTP `401`), ngược lại đặt `"cooldown"`; cập nhật `last_reset_status = "error"`, `last_reset_error = str(exc)`; ghi `reset_logs` (`status="error"`) và lưu mốc backoff `15 phút` trong `ResetService`.
+     - **Bất biến thứ tự:** Luôn ghi DB `status` cuối (`healthy`/`expired`/`cooldown`) xong xuôi rồi mới gọi `wss_pool.end_reset(account_id)` trong khối `finally` (gỡ khỏi `_resetting_accounts` + `notify_all()`) để các waiter thức dậy đọc đúng trạng thái mới nhất.
 
 4. **Vòng lặp nền `ResetService` (Auto-Reset Scheduler):**
    - Poll mỗi `60s` (theo pattern `KeepAliveService._loop()`).
    - Đọc `settings["auto_reset"]` (`enabled`, `interval_minutes >= 60`). Nếu `enabled == False`, bỏ qua.
-   - Đếm số tài khoản `healthy` khả dụng (`enabled == 1`, `status == "healthy"`, `not is_quota_exhausted`). Nếu `<= 1`, hoãn toàn bộ lượt quét.
-   - Duyệt tuần tự từng tài khoản (chạy tối đa 1 tài khoản/lần); bỏ qua nếu: `not enabled`, `not auto_reset`, `status in ("expired", "resetting")`, `is_quota_exhausted(quota_json)`, `requests_since_reset <= 0`, `in_flight > 0`, đang trong backoff `15 phút`, hoặc `now - last_reset_at < interval_minutes * 60`.
+   - Duyệt tuần tự từng tài khoản (chạy tối đa 1 tài khoản/lần); bỏ qua nếu: `not enabled`, `not auto_reset`, `status in ("expired", "resetting")`, `is_quota_exhausted(quota_json)`, `requests_since_reset <= 0`, `in_flight > 0`, đang trong backoff `15 phút`, `now - last_reset_at < interval_minutes * 60`, hoặc `not wss_pool.can_auto_reset_account(acc)` (bất kỳ `capability` nào trong `supported_models` của tài khoản có `healthy_available_count(capability) < 2`). Trước khi thực thi mỗi tài khoản trong `run_due()`, kiểm tra lại `can_auto_reset_account(acc)` và `in_flight == 0`.
    - Khi bật `auto_reset` từ `false → true` (hoặc tạo mới với `auto_reset = true`) mà `last_reset_at == 0`, đặt `last_reset_at = now` để chờ đủ 1 chu kỳ đầu tiên.
