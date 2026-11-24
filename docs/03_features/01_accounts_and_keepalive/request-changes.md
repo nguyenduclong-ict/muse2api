@@ -1,5 +1,16 @@
 # Request changes: Accounts & Keep-Alive
 
+## 2026-11-24 — Nâng cấp Chrome Extension sang Import/Export Cookie cho mọi site (v2.0.0)
+
+- **Yêu cầu:** Nâng cấp Chrome Extension (`extension/`) từ chỉ hỗ trợ `muse.ai` sang hỗ trợ Import, Export Cookie và Clear Site Data cho mọi website.
+- **Phân loại:** Feature mở rộng
+- **Đặc tả thay đổi:**
+  - `extension/manifest.json`: nâng phiên bản lên `2.0.0`, bổ sung quyền `tabs` và `host_permissions` cho `http://*/*`, `https://*/*`.
+  - `extension/cookie-utils.js`: tách module thuần xử lý domain/URL, formatters (`Header`, `JSON`, `Netscape`), auto-detect parser và `buildCookieSetDetails` (hỗ trợ `__Host-`, `__Secure-`, `sameSite`, `partitionKey`, `localhost`/IP, multi-domain).
+  - `extension/popup.html`, `extension/popup.js`: thêm Target Site selector (tự nhận diện active tab hoặc nhập tay), checkbox `Include subdomains`, segmented export format (`Header` / `JSON` / `Netscape`), nút `Download`, nút `Load File` + nhận diện định dạng trực tiếp khi import, và `Clear Site Data` theo site đang chọn.
+  - `spec.md` (`FR-009`), `README.md`: cập nhật tài liệu hướng dẫn và đặc tả v2.0.
+- **Quyết định:** Giữ mặc định định dạng Export là `Header` và tương thích 1-click với `muse.ai` để không làm thay đổi quy trình nạp tài khoản trên Console; giữ nguyên toàn bộ tệp cần đóng gói trong `extension/` (không đặt file test vào `extension/` để `GET /admin/extension/download` luôn sạch).
+
 ## 2026-11-22 — Reset Muse thủ công & Auto-Reset định kỳ theo tài khoản
 
 - **Yêu cầu:** Bổ sung tính năng Reset Muse thủ công cho từng tài khoản (tương đương luồng _Cài đặt → Kiểm soát dữ liệu → Đặt lại Muse_ trên `muse.ai`) và tính năng Auto-Reset định kỳ theo khoảng thời gian lặp lại kèm cờ `auto_reset` riêng cho từng tài khoản và cơ chế đếm request phát sinh.

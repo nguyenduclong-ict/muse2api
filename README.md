@@ -21,7 +21,7 @@ OpenAI-compatible API Gateway (`/v1/*`) và Admin Console cho **muse.ai**, giao 
 - **Reset Muse thủ công & Auto-Reset định kỳ:** Xóa sạch dữ liệu VM `muse.ai` (lịch sử chat, file, task) từ nút **Reset Muse** trong modal **Edit Account** (drain các request `/v1/*` đang chạy trước khi reset) hoặc bật **Auto Reset** theo lịch trong Settings.
 - **WSS Tunnel, Unified Refresh & Keep-Alive chạy ngầm:** Tự động duy trì kết nối WSS Tunnel định kỳ, làm mới trạng thái/WSS/quota hợp nhất, cập nhật trạng thái (`healthy`, `expired`, `cooldown`, `resetting`) realtime lên UI.
 - **Proxy Management:** Import nhiều dòng (`http`/`https`/`socks4`/`socks5`), kiểm tra IP/vị trí/latency qua `ipinfo.io`, gán proxy cho tài khoản và tự gỡ khi xóa proxy.
-- **Chrome Extension Cookie Manager:** Tải trực tiếp từ **Accounts → Download Extension** (`.zip`), hỗ trợ **Copy Cookies** (`HttpOnly`), **Import Cookie** vào trình duyệt, và **Clear Site Data/Cookies** cho `muse.ai`; hỗ trợ copy cookie trực tiếp từ modal **Edit Account**.
+- **Chrome Extension Cookie Manager (All Sites):** Tải trực tiếp từ **Accounts → Download Extension** (`.zip`), tự động nhận diện tab hiện tại (hoặc nhập domain/URL bất kỳ), hỗ trợ **Export/Copy** (`Header`, `JSON`, `Netscape`, kèm tải tệp), **Import Cookie** từ clipboard hoặc tệp (tự nhận diện định dạng, hỗ trợ multi-domain & `HttpOnly`), và **Clear Site Data/Cookies** theo site; giữ nguyên tương thích 1-click với `muse.ai` và copy cookie trực tiếp từ modal **Edit Account**.
 - **Tasks, Input Request & Media Cleanup:** Phân trang server-side cho Tasks & Media, lưu **Input Request** của từng task để xem chi tiết dạng JSON, xem trước ảnh/video/audio qua modal, xóa task kèm dọn file media và auto-cleanup theo thời gian/dung lượng.
 
 ---
@@ -145,8 +145,8 @@ Sau khi khởi động, mở trình duyệt tại `http://127.0.0.1:18610` để
 
 ---
 
-## Hướng dẫn lấy Cookie bằng Extension
+## Hướng dẫn lấy & quản lý Cookie bằng Extension
 
 1. Vào trang **Accounts** trên Console, bấm **Download Extension** để tải `muse2apiv2-extension.zip` và giải nén.
 2. Mở Chrome/Edge tại `chrome://extensions`, bật **Developer mode**, chọn **Load unpacked** và trỏ vào thư mục vừa giải nén.
-3. Đăng nhập `https://muse.ai`, bấm icon extension → **Copy Cookies** (hỗ trợ cả **Import Cookie** vào trình duyệt hoặc **Clear Site Data/Cookies** khi đổi tài khoản), sau đó dán vào modal **Import Account**.
+3. Mở bất kỳ website nào (ví dụ `https://muse.ai`), bấm icon extension → chọn **Header / JSON / Netscape** rồi bấm **Copy Cookies** hoặc **Download** (hỗ trợ cả **Import Cookies** từ clipboard/tệp và **Clear Site Data** theo từng site). Với `muse.ai`, chọn định dạng **Header** rồi bấm **Copy Cookies** và dán vào modal **Import Account**.

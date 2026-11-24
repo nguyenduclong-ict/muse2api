@@ -1,10 +1,10 @@
 {
   "manifest_version": 3,
   "name": "muse2apiv2 Cookie Manager",
-  "version": "1.3.0",
-  "description": "Copy, import cookies, and clear site data for muse.ai (muse2apiv2)",
-  "permissions": ["cookies", "clipboardWrite", "browsingData", "scripting"],
-  "host_permissions": ["https://muse.ai/*", "https://*.muse.ai/*"],
+  "version": "2.0.0",
+  "description": "Export, import cookies, and clear site data for any website (muse2apiv2)",
+  "permissions": ["cookies", "tabs", "clipboardWrite", "browsingData", "scripting"],
+  "host_permissions": ["http://*/*", "https://*/*"],
   "action": {
     "default_popup": "popup.html",
     "default_title": "muse2apiv2 Cookie Manager"
